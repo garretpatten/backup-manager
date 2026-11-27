@@ -1,10 +1,11 @@
 import {
   copyZipToExternalDrive,
-  EXTERNAL_DRIVE_LABEL,
+  DEFAULT_DRIVE_EXPORTS_SUBPATH,
   formatExportDirName,
   moveZipToExportDir,
   resetExternalDriveMountCache,
   resolveDriveExportDir,
+  resolveExternalDriveLabel,
   resolveExternalDriveMount,
   resolveLocalExportDir,
   storeArchive,
@@ -20,9 +21,47 @@ describe('export-dir helpers', () => {
     });
   });
 
+  describe('resolveExternalDriveLabel', () => {
+    it('returns the configured drive label', () => {
+      expect(resolveExternalDriveLabel({ EXTERNAL_DRIVE_LABEL: 'Backup Drive' })).toBe(
+        'Backup Drive',
+      );
+    });
+
+    it('returns null when no label is configured', () => {
+      expect(resolveExternalDriveLabel({})).toBeNull();
+      expect(resolveExternalDriveLabel({ EXTERNAL_DRIVE_LABEL: '' })).toBeNull();
+      expect(resolveExternalDriveLabel({ EXTERNAL_DRIVE_LABEL: '   ' })).toBeNull();
+    });
+  });
+
   describe('resolveLocalExportDir', () => {
-    it('places the dated export dir under an Exports parent in homeDir', () => {
+    it('places the dated export dir under an Exports parent in homeDir by default', () => {
       expect(resolveLocalExportDir('/home/user', date)).toBe(
+        '/home/user/Exports/Exports_2024-06-15',
+      );
+    });
+
+    it('honors an absolute EXPORTS_DIR override', () => {
+      expect(resolveLocalExportDir('/home/user', date, { EXPORTS_DIR: '/data/exports' })).toBe(
+        '/data/exports/Exports_2024-06-15',
+      );
+    });
+
+    it('expands a ~-relative EXPORTS_DIR against homeDir', () => {
+      expect(resolveLocalExportDir('/home/user', date, { EXPORTS_DIR: '~/Backups/Exports' })).toBe(
+        '/home/user/Backups/Exports/Exports_2024-06-15',
+      );
+    });
+
+    it('treats a bare ~ EXPORTS_DIR as homeDir', () => {
+      expect(resolveLocalExportDir('/home/user', date, { EXPORTS_DIR: '~' })).toBe(
+        '/home/user/Exports_2024-06-15',
+      );
+    });
+
+    it('falls back to ~/Exports when EXPORTS_DIR is blank', () => {
+      expect(resolveLocalExportDir('/home/user', date, { EXPORTS_DIR: '   ' })).toBe(
         '/home/user/Exports/Exports_2024-06-15',
       );
     });
@@ -36,54 +75,71 @@ describe('export-dir helpers', () => {
       resetExternalDriveMountCache();
     });
 
-    it('finds the drive by volume label under common mount points', async () => {
-      fs.directories.add('/run/media/garret/T7 Shield');
+    it('finds the drive by the configured label under common mount points', async () => {
+      fs.directories.add('/run/media/garret/Backup Drive');
 
-      expect(await resolveExternalDriveMount(fs, { USER: 'garret' })).toBe(
-        '/run/media/garret/T7 Shield',
-      );
+      expect(
+        await resolveExternalDriveMount(fs, {
+          USER: 'garret',
+          EXTERNAL_DRIVE_LABEL: 'Backup Drive',
+        }),
+      ).toBe('/run/media/garret/Backup Drive');
     });
 
     it('finds the drive under /Volumes on macOS', async () => {
-      fs.directories.add('/Volumes/T7 Shield');
+      fs.directories.add('/Volumes/Backup Drive');
 
-      expect(await resolveExternalDriveMount(fs, {})).toBe('/Volumes/T7 Shield');
+      expect(await resolveExternalDriveMount(fs, { EXTERNAL_DRIVE_LABEL: 'Backup Drive' })).toBe(
+        '/Volumes/Backup Drive',
+      );
     });
 
-    it('returns null when the drive is not mounted', async () => {
-      expect(await resolveExternalDriveMount(fs, { USER: 'garret' })).toBeNull();
+    it('returns null when no label is configured', async () => {
+      fs.directories.add('/Volumes/T7 Shield');
+
+      expect(await resolveExternalDriveMount(fs, {})).toBeNull();
+    });
+
+    it('returns null when the labeled drive is not mounted', async () => {
+      expect(
+        await resolveExternalDriveMount(fs, { EXTERNAL_DRIVE_LABEL: 'Backup Drive' }),
+      ).toBeNull();
     });
 
     it('ignores a file that matches the volume label', async () => {
-      fs.files.set('/Volumes/T7 Shield', 'not-a-directory');
+      fs.files.set('/Volumes/Backup Drive', 'not-a-directory');
 
-      expect(await resolveExternalDriveMount(fs, {})).toBeNull();
+      expect(
+        await resolveExternalDriveMount(fs, { EXTERNAL_DRIVE_LABEL: 'Backup Drive' }),
+      ).toBeNull();
     });
 
     it('skips user-scoped mount points when no user is known', async () => {
-      fs.directories.add('/run/media/garret/T7 Shield');
+      fs.directories.add('/run/media/garret/Backup Drive');
 
-      expect(await resolveExternalDriveMount(fs, {})).toBeNull();
-    });
-
-    it('uses the drive label constant', () => {
-      expect(EXTERNAL_DRIVE_LABEL).toBe('T7 Shield');
+      expect(
+        await resolveExternalDriveMount(fs, { EXTERNAL_DRIVE_LABEL: 'Backup Drive' }),
+      ).toBeNull();
     });
   });
 
   describe('resolveDriveExportDir', () => {
-    it('places the dated export dir under Garret/Exports on the drive', () => {
-      expect(resolveDriveExportDir('/run/media/garret/T7 Shield', date)).toBe(
-        '/run/media/garret/T7 Shield/Garret/Exports/Exports_2024-06-15',
+    it('places the dated export dir under an Exports subpath on the drive', () => {
+      expect(resolveDriveExportDir('/run/media/garret/Backup Drive', date)).toBe(
+        '/run/media/garret/Backup Drive/Exports/Exports_2024-06-15',
       );
+    });
+
+    it('keeps the default drive subpath free of personal values', () => {
+      expect(DEFAULT_DRIVE_EXPORTS_SUBPATH).toEqual(['Exports']);
     });
 
     it('honors an env override for the drive subpath', () => {
       expect(
-        resolveDriveExportDir('/run/media/garret/T7 Shield', date, {
+        resolveDriveExportDir('/run/media/garret/Backup Drive', date, {
           EXTERNAL_DRIVE_EXPORT_SUBPATH: 'Backup/Archives',
         }),
-      ).toBe('/run/media/garret/T7 Shield/Backup/Archives/Exports_2024-06-15');
+      ).toBe('/run/media/garret/Backup Drive/Backup/Archives/Exports_2024-06-15');
     });
   });
 
@@ -160,13 +216,13 @@ describe('export-dir helpers', () => {
         fs,
         logger,
         '/home/user/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
-        '/run/media/garret/T7 Shield/Garret/Exports/Exports_2024-06-15',
+        '/run/media/garret/Backup Drive/Exports/Exports_2024-06-15',
       );
 
       expect(ok).toBe(true);
       expect(
         fs.files.get(
-          '/run/media/garret/T7 Shield/Garret/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
+          '/run/media/garret/Backup Drive/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
         ),
       ).toBe('zip-content');
     });
@@ -176,7 +232,7 @@ describe('export-dir helpers', () => {
         fs,
         logger,
         '/home/user/Exports/Exports_2024-06-15/missing.zip',
-        '/run/media/garret/T7 Shield/Garret/Exports/Exports_2024-06-15',
+        '/run/media/garret/Backup Drive/Exports/Exports_2024-06-15',
       );
 
       expect(ok).toBe(false);
@@ -207,42 +263,87 @@ describe('export-dir helpers', () => {
       expect(fs.files.get(zipPath)).toBeUndefined();
     });
 
-    it('copies the archive to the drive export dir when mounted', async () => {
-      fs.directories.add('/Volumes/T7 Shield');
-
-      await storeArchive(fs, {}, logger, zipPath, '/home/user', date);
-
-      expect(fs.files.get(`/Volumes/T7 Shield/Garret/Exports/Exports_2024-06-15/${zipName}`)).toBe(
-        'zip-content',
-      );
-    });
-
-    it('honors the drive subpath env override', async () => {
-      fs.directories.add('/Volumes/T7 Shield');
-
-      await storeArchive(
+    it('honors an EXPORTS_DIR override for the local export root', async () => {
+      const archivePath = await storeArchive(
         fs,
-        { EXTERNAL_DRIVE_EXPORT_SUBPATH: 'Backup/Archives' },
+        { EXPORTS_DIR: '/data/exports' },
         logger,
         zipPath,
         '/home/user',
         date,
       );
 
-      expect(fs.files.get(`/Volumes/T7 Shield/Backup/Archives/Exports_2024-06-15/${zipName}`)).toBe(
+      expect(archivePath).toBe(`/data/exports/Exports_2024-06-15/${zipName}`);
+      expect(fs.files.get(`/data/exports/Exports_2024-06-15/${zipName}`)).toBe('zip-content');
+    });
+
+    it('copies the archive to the drive export dir when a labeled drive is mounted', async () => {
+      fs.directories.add('/Volumes/Backup Drive');
+
+      await storeArchive(
+        fs,
+        { EXTERNAL_DRIVE_LABEL: 'Backup Drive' },
+        logger,
+        zipPath,
+        '/home/user',
+        date,
+      );
+
+      expect(fs.files.get(`/Volumes/Backup Drive/Exports/Exports_2024-06-15/${zipName}`)).toBe(
         'zip-content',
       );
     });
 
-    it('warns and keeps the local archive when the drive is not mounted', async () => {
+    it('honors the drive subpath env override', async () => {
+      fs.directories.add('/Volumes/Backup Drive');
+
+      await storeArchive(
+        fs,
+        {
+          EXTERNAL_DRIVE_LABEL: 'Backup Drive',
+          EXTERNAL_DRIVE_EXPORT_SUBPATH: 'Backup/Archives',
+        },
+        logger,
+        zipPath,
+        '/home/user',
+        date,
+      );
+
+      expect(
+        fs.files.get(`/Volumes/Backup Drive/Backup/Archives/Exports_2024-06-15/${zipName}`),
+      ).toBe('zip-content');
+    });
+
+    it('skips the external copy without failing when no label is configured', async () => {
+      fs.directories.add('/Volumes/T7 Shield');
+
       const archivePath = await storeArchive(fs, {}, logger, zipPath, '/home/user', date);
 
       expect(archivePath).toBe(localArchivePath);
       expect(fs.files.get(localArchivePath)).toBe('zip-content');
       expect(
-        logger.messages.some((m) => m.level === 'WARN' && m.message.includes('T7 Shield')),
+        logger.messages.some(
+          (m) => m.level === 'INFO' && m.message.includes('EXTERNAL_DRIVE_LABEL'),
+        ),
       ).toBe(true);
-      expect(fs.files.get('/Volumes/T7 Shield/Garret/Exports/Exports_2024-06-15')).toBeUndefined();
+      expect(logger.messages.some((m) => m.level === 'WARN')).toBe(false);
+    });
+
+    it('warns and keeps the local archive when the labeled drive is not mounted', async () => {
+      const archivePath = await storeArchive(
+        fs,
+        { EXTERNAL_DRIVE_LABEL: 'Backup Drive' },
+        logger,
+        zipPath,
+        '/home/user',
+        date,
+      );
+
+      expect(archivePath).toBe(localArchivePath);
+      expect(fs.files.get(localArchivePath)).toBe('zip-content');
+      expect(
+        logger.messages.some((m) => m.level === 'WARN' && m.message.includes('Backup Drive')),
+      ).toBe(true);
     });
   });
 });

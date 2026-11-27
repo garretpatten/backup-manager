@@ -2,9 +2,10 @@ import path from 'node:path';
 import { FileSystem, Logger } from './types.js';
 import { formatBackupDate } from './utils.js';
 
-export const EXTERNAL_DRIVE_LABEL = 'T7 Shield';
-export const DEFAULT_DRIVE_EXPORTS_SUBPATH = ['Garret', 'Exports'];
+export const DRIVE_LABEL_ENV = 'EXTERNAL_DRIVE_LABEL';
 export const DRIVE_EXPORTS_SUBPATH_ENV = 'EXTERNAL_DRIVE_EXPORT_SUBPATH';
+export const LOCAL_EXPORTS_DIR_ENV = 'EXPORTS_DIR';
+export const DEFAULT_DRIVE_EXPORTS_SUBPATH = ['Exports'];
 
 let driveMountCache: Promise<string | null> | undefined;
 
@@ -16,8 +17,29 @@ export function formatExportDirName(date: Date): string {
   return `Exports_${formatBackupDate(date)}`;
 }
 
-export function resolveLocalExportDir(homeDir: string, date: Date): string {
-  return path.join(homeDir, 'Exports', formatExportDirName(date));
+export function resolveExternalDriveLabel(env?: NodeJS.ProcessEnv): string | null {
+  const label = env?.[DRIVE_LABEL_ENV]?.trim();
+  return label ? label : null;
+}
+
+export function resolveLocalExportDir(
+  homeDir: string,
+  date: Date,
+  env?: NodeJS.ProcessEnv,
+): string {
+  const override = env?.[LOCAL_EXPORTS_DIR_ENV]?.trim();
+  const root = override ? expandTilde(override, homeDir) : path.join(homeDir, 'Exports');
+  return path.join(root, formatExportDirName(date));
+}
+
+function expandTilde(input: string, homeDir: string): string {
+  if (input === '~') {
+    return homeDir;
+  }
+  if (input.startsWith('~/')) {
+    return path.join(homeDir, input.slice(2));
+  }
+  return input;
 }
 
 export function resolveExternalDriveMount(
@@ -34,13 +56,17 @@ async function probeExternalDriveMount(
   fs: FileSystem,
   env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
-  const candidates = [path.join('/Volumes', EXTERNAL_DRIVE_LABEL)];
+  const label = resolveExternalDriveLabel(env);
+  if (!label) {
+    return null;
+  }
+  const candidates = [path.join('/Volumes', label)];
   const user = env.USER || env.USERNAME || '';
   if (user) {
-    candidates.push(path.join('/media', user, EXTERNAL_DRIVE_LABEL));
-    candidates.push(path.join('/run/media', user, EXTERNAL_DRIVE_LABEL));
+    candidates.push(path.join('/media', user, label));
+    candidates.push(path.join('/run/media', user, label));
   }
-  candidates.push(path.join('/media', EXTERNAL_DRIVE_LABEL));
+  candidates.push(path.join('/media', label));
   for (const candidate of candidates) {
     const stats = await fs.stat(candidate).catch(() => null);
     if (stats?.isDirectory()) {
@@ -110,11 +136,16 @@ export async function storeArchive(
     fs,
     logger,
     zipPath,
-    resolveLocalExportDir(homeDir, date),
+    resolveLocalExportDir(homeDir, date, env),
   );
+  const label = resolveExternalDriveLabel(env);
+  if (!label) {
+    logger.info(`${DRIVE_LABEL_ENV} is not set; skipping external drive copy`);
+    return archivePath;
+  }
   const driveMount = await resolveExternalDriveMount(fs, env);
   if (!driveMount) {
-    logger.warn(`External drive "${EXTERNAL_DRIVE_LABEL}" not found; skipping external copy`);
+    logger.warn(`External drive "${label}" not found; skipping external copy`);
     return archivePath;
   }
   await copyZipToExternalDrive(

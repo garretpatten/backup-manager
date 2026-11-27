@@ -180,9 +180,9 @@ describe('SpotifyBackup', () => {
     expect(
       fs.files.get('/home/user/Exports/Exports_2024-06-15/Spotify-Export_2024-06-15.zip'),
     ).toBe('zip-content');
-    expect(logger.messages.some((m) => m.level === 'WARN' && m.message.includes('T7 Shield'))).toBe(
-      true,
-    );
+    expect(
+      logger.messages.some((m) => m.level === 'INFO' && m.message.includes('EXTERNAL_DRIVE_LABEL')),
+    ).toBe(true);
     expect(process.exitCode).toBeUndefined();
   });
 

@@ -138,21 +138,24 @@ describe('ObsidianNotesBackup', () => {
     expect(logger.messages.some((m) => m.message.includes('Archive: '))).toBe(true);
   });
 
-  it('copies the archive to the external drive when mounted', async () => {
+  it('copies the archive to the external drive when a labeled drive is mounted', async () => {
     const homeDir = '/home/user';
     setupSourceFs(fs, homeDir);
-    fs.directories.add('/Volumes/T7 Shield');
+    fs.directories.add('/Volumes/Backup Drive');
 
     const config: ObsidianNotesBackupConfig = {
       homeDir,
       logDir: '/logs',
     };
 
-    await new ObsidianNotesBackup(context).run(config);
+    await new ObsidianNotesBackup({
+      ...context,
+      env: { EXTERNAL_DRIVE_LABEL: 'Backup Drive' },
+    }).run(config);
 
     expect(
       fs.files.get(
-        '/Volumes/T7 Shield/Garret/Exports/Exports_2024-06-15/Obsidian-Notes_2024-06-15.zip',
+        '/Volumes/Backup Drive/Exports/Exports_2024-06-15/Obsidian-Notes_2024-06-15.zip',
       ),
     ).toBe('zip-content');
     expect(
@@ -174,9 +177,9 @@ describe('ObsidianNotesBackup', () => {
     expect(
       fs.files.get('/home/user/Exports/Exports_2024-06-15/Obsidian-Notes_2024-06-15.zip'),
     ).toBe('zip-content');
-    expect(logger.messages.some((m) => m.level === 'WARN' && m.message.includes('T7 Shield'))).toBe(
-      true,
-    );
+    expect(
+      logger.messages.some((m) => m.level === 'INFO' && m.message.includes('EXTERNAL_DRIVE_LABEL')),
+    ).toBe(true);
   });
 
   it('copies note files byte-for-byte instead of re-encoding text', async () => {
