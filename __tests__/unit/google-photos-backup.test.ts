@@ -74,7 +74,9 @@ describe('GooglePhotosBackup', () => {
   });
 
   function backup(): GooglePhotosBackup {
-    return new GooglePhotosBackup(context, mediaFs, transport);
+    // No-op sleep: the failing-slice test drives three retry attempts, and
+    // the default backoff would burn three real seconds per run.
+    return new GooglePhotosBackup(context, mediaFs, transport, async () => {});
   }
 
   function mockSliceDownload(): void {
@@ -179,6 +181,19 @@ describe('GooglePhotosBackup', () => {
       await backup().run(config);
 
       expect(process.exitCode).toBe(1);
+      // All MAX_ATTEMPTS attempts ran (the injected no-op sleep keeps the
+      // backoff instant) before the slice was declared failed.
+      expect(
+        logger.messages.filter((m) => m.level === 'WARN' && /attempt 1\/3/.test(m.message)),
+      ).toHaveLength(1);
+      expect(
+        logger.messages.filter((m) => m.level === 'WARN' && /attempt 2\/3/.test(m.message)),
+      ).toHaveLength(1);
+      expect(
+        logger.messages.some(
+          (m) => m.level === 'ERROR' && m.message.includes('FAILED after 3 attempts'),
+        ),
+      ).toBe(true);
       expect(
         logger.messages.some((m) => m.level === 'WARN' && m.message.includes('failed to download')),
       ).toBe(true);

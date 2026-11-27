@@ -698,7 +698,12 @@ describe('orchestratedSteps registry', () => {
     // regardless of any project-level copy on the machine running tests.
     const { config } = await loadBackupsConfig(new RealFileSystem(), moduleRoot, moduleRoot);
 
-    expect(config.modules.map((m) => m.name)).toEqual(orchestratedSteps.map((s) => s.name));
+    // Set equality, not order: backups.json owns the run order and may
+    // legitimately reorder entries, while the registry only forbids unknown
+    // and unlisted steps.
+    expect([...config.modules.map((m) => m.name)].sort()).toEqual(
+      [...orchestratedSteps.map((s) => s.name)].sort(),
+    );
   });
 
   it('ships every step enabled except the deprecated spotify and todoist pair', async () => {
