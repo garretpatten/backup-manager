@@ -1,16 +1,50 @@
 {
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
+    "backup:code-local": "tsx src/local-backup.ts",
+    "backup:code-gitlab": "tsx src/gitlab-mirror.ts",
+    "backup:code-gitlab-cleanup": "tsx src/gitlab-mirror-cleanup.ts",
+    "backup:notion": "tsx src/notion-backup.ts",
+    "backup:brave-bookmarks": "tsx src/brave-bookmarks-backup.ts",
+    "backup:chrome-bookmarks": "tsx src/chrome-bookmarks-backup.ts",
+    "backup:obsidian-notes": "tsx src/obsidian-notes-backup.ts",
+    "backup:google-calendar": "tsx src/google-calendar-backup.ts",
+    "backup:google-tasks": "tsx src/google-tasks-backup.ts",
+    "backup:google-contacts": "tsx src/google-contacts-backup.ts",
+    "backup:google-photos": "tsx src/google-photos-backup.ts",
+    "backup:all": "tsx src/run-all.ts",
+    "backups": "tsx src/run-all.ts",
     "lint": "npm run lint:prettier && npm run lint:markdown && npm run lint:yaml",
     "lint:prettier": "prettier --check .",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\"",
-    "lint:yaml": "yamllint .github .yamllint .markdownlint.yaml"
-  },
-  "devDependencies": {
-    "markdownlint-cli2": "^0.24.0",
-    "prettier": "^3.6.2"
+    "lint:yaml": "yamllint .github .yamllint .markdownlint.yaml",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
   },
   "overrides": {
     "katex": "^0.18.2",
-    "re2js": "^2.9.1"
+    "re2js": "^2.9.1",
+    "smol-toml": "^1.9.0",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.5"
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.20.0",
+    "@types/node": "^24.19.0",
+    "@vitest/coverage-v8": "^5.0.3",
+    "eslint": "^9.20.1",
+    "globals": "^16.0.0",
+    "markdownlint-cli2": "^0.24.0",
+    "prettier": "^3.7.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.1",
+    "vitest": "^5.0.3"
   }
 }

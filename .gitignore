@@ -131,3 +131,23 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Backup output directories and archives
+GitHub-GitLab-Backup/
+Code-Export_*.zip
+Code-Export_*/
+Projects-Export_*.zip
+Projects-Export_*/
+Notion-Export_*.zip
+Notion-Export_*/
+Obsidian-Notes_*.zip
+Obsidian-Notes_*/
+Google-Calendar-Export_*.zip
+Google-Calendar-Export_*/
+Google-Tasks-Export_*.zip
+Google-Tasks-Export_*/
+Google-Contacts-Export_*.zip
+Google-Contacts-Export_*/
+chrome-bookmarks_*
+brave-bookmarks_*
+.google-photos-state.json
