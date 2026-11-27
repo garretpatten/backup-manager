@@ -106,20 +106,20 @@ export async function moveZipToExportDir(
   }
 }
 
-export async function copyZipToExternalDrive(
+export async function copyFileToExternalDrive(
   fs: FileSystem,
   logger: Logger,
-  zipPath: string,
+  filePath: string,
   destinationDir: string,
 ): Promise<boolean> {
-  const destination = path.join(destinationDir, path.basename(zipPath));
+  const destination = path.join(destinationDir, path.basename(filePath));
   try {
     await fs.mkdir(destinationDir, { recursive: true });
-    await fs.copyFile(zipPath, destination);
-    logger.success(`Archive copied to external drive: ${destination}`);
+    await fs.copyFile(filePath, destination);
+    logger.success(`Export file copied to external drive: ${destination}`);
     return true;
   } catch (error) {
-    logger.warn(`Failed to copy archive to external drive: ${String(error)}`);
+    logger.warn(`Failed to copy export file to external drive: ${String(error)}`);
     return false;
   }
 }
@@ -148,11 +148,40 @@ export async function storeArchive(
     logger.warn(`External drive "${label}" not found; skipping external copy`);
     return archivePath;
   }
-  await copyZipToExternalDrive(
+  await copyFileToExternalDrive(
     fs,
     logger,
     archivePath,
     resolveDriveExportDir(driveMount, date, env),
   );
   return archivePath;
+}
+
+/**
+ * Copies non-archive export files (bookmarks HTML/JSON) into the dated
+ * export directory on the labeled external drive, mirroring the external
+ * half of storeArchive(): skipped with an informational log when no label
+ * is configured and with a warning when the labeled drive is not mounted.
+ */
+export async function copyExportFilesToExternalDrive(
+  fs: FileSystem,
+  env: NodeJS.ProcessEnv,
+  logger: Logger,
+  files: string[],
+  date: Date,
+): Promise<void> {
+  const label = resolveExternalDriveLabel(env);
+  if (!label) {
+    logger.info(`${DRIVE_LABEL_ENV} is not set; skipping external drive copy`);
+    return;
+  }
+  const driveMount = await resolveExternalDriveMount(fs, env);
+  if (!driveMount) {
+    logger.warn(`External drive "${label}" not found; skipping external copy`);
+    return;
+  }
+  const driveDir = resolveDriveExportDir(driveMount, date, env);
+  for (const file of files) {
+    await copyFileToExternalDrive(fs, logger, file, driveDir);
+  }
 }

@@ -1,4 +1,5 @@
 import { FileLogger } from './logger.js';
+import { copyExportFilesToExternalDrive, resolveLocalExportDir } from './export-dir.js';
 import { BackupContext, Logger } from './types.js';
 import path from 'node:path';
 import { formatBackupDate, formatRunTimestamp } from './utils.js';
@@ -41,12 +42,13 @@ export class ChromiumBookmarksBackup {
     const runTs = formatRunTimestamp(date);
     const backupDate = formatBackupDate(date);
     const homeDir = config.homeDir;
-    const outputDir = config.outputDir ?? homeDir;
+    const outputDir = config.outputDir ?? resolveLocalExportDir(homeDir, date, this.context.env);
     const htmlFile = path.join(outputDir, `${config.outputPrefix}_${backupDate}.html`);
     const jsonFile = path.join(outputDir, `${config.outputPrefix}_${backupDate}.json`);
     const logFile = path.join(config.logDir, `${config.outputPrefix}-backup-${runTs}.log`);
 
     await this.context.fs.mkdir(config.logDir, { recursive: true });
+    await this.context.fs.mkdir(outputDir, { recursive: true });
 
     const logger = new FileLogger(this.context.logger, this.context.fs, logFile);
 
@@ -68,9 +70,12 @@ export class ChromiumBookmarksBackup {
     const rawJson = await this.context.fs.readFile(sourcePath);
     logger.info(`Read ${rawJson.length} bytes from source file`);
 
+    const exportFiles: string[] = [];
+
     if (config.copyJson ?? true) {
       await this.context.fs.writeFile(jsonFile, rawJson);
       logger.info(`Copied original JSON to: ${jsonFile}`);
+      exportFiles.push(jsonFile);
     }
 
     let bookmarks: ChromiumBookmarks;
@@ -85,6 +90,15 @@ export class ChromiumBookmarksBackup {
     const html = this.convertToNetscapeHtml(bookmarks);
     await this.context.fs.writeFile(htmlFile, html);
     logger.info(`Wrote Netscape HTML backup: ${htmlFile}`);
+    exportFiles.push(htmlFile);
+
+    await copyExportFilesToExternalDrive(
+      this.context.fs,
+      this.context.env,
+      logger,
+      exportFiles,
+      date,
+    );
 
     const stats = this.countBookmarks(bookmarks);
     logger.success(`${config.browserName} bookmarks backup completed successfully`);
