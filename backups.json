@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "modules": [
+    { "name": "code-local", "enabled": true },
+    { "name": "code-gitlab", "enabled": true },
+    { "name": "notion", "enabled": true },
+    { "name": "brave-bookmarks", "enabled": true },
+    { "name": "chrome-bookmarks", "enabled": true },
+    { "name": "obsidian-notes", "enabled": true },
+    { "name": "google-calendar", "enabled": true },
+    { "name": "google-tasks", "enabled": true },
+    { "name": "google-contacts", "enabled": true }
+  ]
+}

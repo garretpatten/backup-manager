@@ -65,8 +65,9 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   stores the refresh token for unattended runs
 - **Google Photos**: Takeout archive download with resume and verification, merged
   into a flat, deduplicated library tracked by a SHA-256 state manifest
-- **Orchestration**: `run-all` runs every configured backup, skips jobs missing
-  credentials, and reports per-step status with combined logging
+- **Orchestration**: `run-all` executes the steps listed in `backups.json`
+  sequentially, skips disabled steps and steps missing credentials, and
+  reports per-step status with combined logging
 
 ## Project structure
 
@@ -83,7 +84,11 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   - `google-contacts-backup.ts` — Google Contacts export
   - `google-photos-backup.ts` — Google Photos Takeout backup (download,
     extract, merge)
-  - `run-all.ts` — Orchestrator that runs all backups
+  - `run-all.ts` — Config-driven orchestrator running the steps listed in
+    `backups.json`
+  - `backup-config.ts` — `backups.json` resolution, parsing, and validation
+  - `backup-steps.ts` — Registry of orchestrated step descriptors (name,
+    required credentials, kind, config assembly)
   - `github.ts`, `gitlab.ts`, `notion.ts` — API clients
   - `google-calendar.ts`, `google-tasks.ts`, `google-contacts.ts` — Google API clients
   - `google-auth.ts` — Shared Google OAuth 2.0 token refresh
@@ -115,6 +120,8 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
 - **`google-photos/`** — Google Photos Takeout backup
   - `google-photos-backup.sh` — Thin wrapper around `google-photos-backup.ts`
 - **`run-all.sh`** — Thin wrapper around `run-all.ts`
+- **`backups.json`** — Committed orchestrator configuration: the ordered
+  list of backup steps and their enable state
 
 ## Running Tests
 
@@ -264,7 +271,8 @@ All Google backups share the same OAuth 2.0 credentials:
 GOOGLE_CLIENT_ID="your_google_oauth_client_id"
 GOOGLE_CLIENT_SECRET="your_google_oauth_client_secret"
 
-# Optional: filled in automatically on first run (see below)
+# Required for `npm run backup:all`; filled in automatically by the first
+# interactive run of an individual Google backup (see below)
 GOOGLE_REFRESH_TOKEN=""
 
 # Optional
@@ -308,10 +316,12 @@ re-authorize once. Remove `GOOGLE_REFRESH_TOKEN` from `.env` and run
 re-requests all four scopes and saves the new token automatically.
 
 Subsequent runs — including `npm run backup:all` and cron jobs — reuse the
-saved token and run unattended. If the refresh token is revoked or expires,
-`backup:all` automatically re-runs the browser authorization flow (up to three
-attempts) and saves the new token to `.env`. If you are not present to approve
-the prompt, the authorization times out and the backup fails gracefully so the
+saved token and run unattended. Until the token is saved, an orchestrated run
+skips the Google steps as `SKIPPED (no credentials)` rather than starting the
+interactive flow. If the refresh token is revoked or expires, `backup:all`
+automatically re-runs the browser authorization flow (up to three attempts)
+and saves the new token to `.env`. If you are not present to approve the
+prompt, the authorization times out and the backup fails gracefully so the
 rest of the orchestrated backups continue.
 
 ### Google Photos backup
@@ -852,9 +862,7 @@ for download runs; the directories can also be adjusted with
 
 ## Run All Backups
 
-To run the code-local, code-gitlab, notion, brave-bookmarks, chrome-bookmarks,
-obsidian-notes, google-calendar, google-tasks, and google-contacts backups in
-sequence (the Google Photos backup is user-initiated and not included):
+To run every orchestrated backup in one unattended pass:
 
 ```bash
 ./run-all.sh
@@ -867,13 +875,85 @@ npm run backup:all
 npm run backups
 ```
 
-The orchestrator captures each backup's output in a combined log and reports the
-status of each step (`OK`, `FAILED`, or `SKIPPED`). Backups that require
-credentials you have not configured (`code-gitlab` without `GITLAB_TOKEN` /
-`GITLAB_NAMESPACE`, `notion` without `NOTION_API_TOKEN`) are skipped with a
-warning instead of failing with confusing API errors. The run exits non-zero
-when any executed backup fails. The `code-gitlab` step includes the automatic
+The orchestrator is config-driven: the step list, execution order, and
+enable/disable state come from `backups.json` (below), while each step's
+credentials and module settings come from `.env` and the environment. It runs
+the steps sequentially, captures each backup's output in a combined log, and
+reports the status of every step in a summary: `OK`, `FAILED`,
+`SKIPPED (disabled)`, or `SKIPPED (no credentials)`. The run exits non-zero
+when any executed step fails. The `code-gitlab` step includes the automatic
 mirror cleanup.
+
+### backups.json
+
+The committed `backups.json` at the repository root is the single
+configuration mechanism for the orchestrator — an ordered list of steps, each
+with an `enabled` flag:
+
+```json
+{
+  "version": 1,
+  "modules": [
+    { "name": "code-local", "enabled": true },
+    { "name": "code-gitlab", "enabled": true }
+  ]
+}
+```
+
+- **Ordering**: steps run in the order listed. The file is the only source of
+  execution order; environment variables remain for credentials and
+  per-module settings only.
+- **Disabling a step**: set `"enabled": false` for an optional or deprecated
+  step. The step never runs, its credentials are never checked, and the
+  summary reports `SKIPPED (disabled)`.
+- **Resolution**: `backups.json` is resolved exactly like `.env` (see
+  `resolveProjectRoot()` in `src/backup-context.ts`): a copy at the project
+  root — the consuming repository when this repo is mounted as a submodule,
+  for example `system-scripts/backups` — wins wholesale over the committed
+  module-root file, with no per-key merging. Submodule consumers thereby get
+  a per-deployment enable state without dirtying the submodule working tree.
+- **Validation**: the orchestrator fails loudly before running anything when
+  the file is malformed, uses an unknown `version`, is missing at both
+  resolution locations, lists a step name that is not in the registry (a typo
+  or version drift), or omits a registered step — explicit listing is
+  required, so there are no silent defaults.
+
+### Orchestrated steps and credentials
+
+The nine orchestrated steps and the credentials each requires:
+
+| Step               | Required credentials                                               |
+| ------------------ | ------------------------------------------------------------------ |
+| `code-local`       | none (`GITHUB_TOKEN` optional for private repositories)            |
+| `code-gitlab`      | `GITLAB_TOKEN`, `GITLAB_NAMESPACE`                                 |
+| `notion`           | `NOTION_API_TOKEN`                                                 |
+| `brave-bookmarks`  | none                                                               |
+| `chrome-bookmarks` | none                                                               |
+| `obsidian-notes`   | none                                                               |
+| `google-calendar`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
+| `google-tasks`     | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
+| `google-contacts`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
+
+An enabled step whose credentials are unset or empty is skipped with a
+warning — `SKIPPED (no credentials)` — instead of failing with confusing API
+errors. That includes the Google steps, which need the saved
+`GOOGLE_REFRESH_TOKEN` (run an individual Google backup once interactively to
+create it; a revoked or expired token still triggers the automatic
+re-authorization flow described above).
+
+The two skip conditions are distinct signals for a cron operator:
+`SKIPPED (disabled)` is intentional, while `SKIPPED (no credentials)` is a
+misconfiguration to fix.
+
+### Steps that are not orchestrated
+
+`backups.json` lists the nine orchestrated steps only. These are not registry
+steps, by design:
+
+- `google-photos` — user-initiated: Takeout exports are requested by hand and
+  expire after about a week, so a cron step would always fail.
+- `gitlab-mirror-cleanup` — a composite tail of the `code-gitlab` step (also
+  runnable standalone via `npm run backup:code-gitlab-cleanup`).
 
 ---
 
@@ -1032,7 +1112,9 @@ Logs include:
 16. **Google: "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET"**
     - Add your Google OAuth 2.0 Desktop app credentials to `.env`
 
-17. **Google: "Missing GOOGLE_REFRESH_TOKEN"**
+17. **Google: "SKIPPED (no credentials)" for the Google steps in `backup:all`**
+    - The saved `GOOGLE_REFRESH_TOKEN` is missing (or `GOOGLE_CLIENT_ID` /
+      `GOOGLE_CLIENT_SECRET` are unset)
     - Run `npm run backup:google-calendar`, `npm run backup:google-tasks`,
       or `npm run backup:google-contacts` once in an interactive terminal to
       complete the browser authorization; the token is saved to `.env`
