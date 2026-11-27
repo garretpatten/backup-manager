@@ -1,6 +1,8 @@
 import { BackupOrchestrator } from '../../src/run-all.js';
-import { OTHER_CONTACTS_READ_MASK, PERSON_FIELDS } from '../../src/google-contacts.js';
-import { resetExternalDriveMountCache } from '../../src/export-dir.js';
+import { BackupConfigError, loadBackupsConfig } from '../../src/backup-config.js';
+import { BackupStepDescriptor, BackupStepKind, orchestratedSteps } from '../../src/backup-steps.js';
+import { RealFileSystem } from '../../src/fs.js';
+import { resolveModuleRoot } from '../../src/backup-context.js';
 import { BackupContext } from '../../src/types.js';
 import {
   MockArchive,
@@ -11,304 +13,462 @@ import {
   MockLogger,
 } from '../test-helpers.js';
 
-const PEOPLE_CONNECTIONS_URL = `https://people.googleapis.com/v1/people/me/connections?personFields=${encodeURIComponent(PERSON_FIELDS)}&pageSize=1000`;
-const PEOPLE_OTHER_CONTACTS_URL = `https://people.googleapis.com/v1/otherContacts?readMask=${encodeURIComponent(OTHER_CONTACTS_READ_MASK)}&pageSize=1000`;
+interface ModuleEntry {
+  name: string;
+  enabled: boolean;
+}
+
+interface StubStepOptions {
+  requiredCredentials?: readonly string[];
+  kind?: BackupStepKind;
+  outcome?: 'ok' | 'fail';
+  calls: string[];
+}
+
+/**
+ * Fake step for orchestrator-level tests. Ordering, skip kinds, failure
+ * propagation, and validation errors are registry-generic behavior, so the
+ * tests use stubs instead of the ~10-endpoint per-module HTTP mocking the
+ * real modules keep in their own unit tests.
+ */
+function stubStep(name: string, options: StubStepOptions): BackupStepDescriptor {
+  return {
+    name,
+    requiredCredentials: options.requiredCredentials,
+    kind: options.kind,
+    run: async () => {
+      options.calls.push(name);
+      if (options.outcome === 'fail') {
+        throw new Error(`simulated failure: ${name}`);
+      }
+    },
+  };
+}
+
+function configJson(modules: ModuleEntry[]): string {
+  return JSON.stringify({ version: 1, modules });
+}
+
+function makeContext(
+  env: NodeJS.ProcessEnv,
+  fs: MockFileSystem,
+  logger: MockLogger,
+): BackupContext {
+  return {
+    logger,
+    fs,
+    http: new MockHttpClient(),
+    git: {
+      clone: async () => undefined,
+      remoteUpdate: async () => undefined,
+      pushMirror: async () => undefined,
+      checkout: async () => undefined,
+      getDefaultBranch: async () => null,
+    },
+    sync: { syncRepo: async () => ({ status: 'failed', output: 'unused' }) },
+    archive: new MockArchive(fs),
+    dateProvider: new MockDateProvider(new Date('2024-06-15T08:30:45Z')),
+    env,
+    runner: new MockCommandRunner(),
+  };
+}
+
+function summaryLines(logger: MockLogger): string[] {
+  return logger.messages
+    .filter((m) => m.message.startsWith('  ') && m.message.includes(': '))
+    .map((m) => m.message);
+}
 
 describe('BackupOrchestrator', () => {
-  let context: BackupContext;
-  let logger: MockLogger;
-  let runner: MockCommandRunner;
-  let http: MockHttpClient;
   let fs: MockFileSystem;
+  let logger: MockLogger;
+  let env: NodeJS.ProcessEnv;
+
+  const runConfig = {
+    logDir: '/logs',
+    projectRoot: '/project',
+    moduleRoot: '/module',
+  };
 
   beforeEach(() => {
     process.exitCode = undefined;
     fs = new MockFileSystem();
-    http = new MockHttpClient();
     logger = new MockLogger();
-    runner = new MockCommandRunner();
-    const archive = new MockArchive(fs);
-    resetExternalDriveMountCache();
-
-    context = {
-      logger,
-      fs,
-      http,
-      git: {
-        clone: async () => undefined,
-        remoteUpdate: async () => undefined,
-        pushMirror: async () => undefined,
-        checkout: async () => undefined,
-        getDefaultBranch: async () => null,
-      },
-      sync: { syncRepo: async () => ({ status: 'failed', output: 'unused' }) },
-      archive,
-      dateProvider: new MockDateProvider(new Date('2024-06-15T08:30:45Z')),
-      env: {
-        HOME: '/home/user',
-        GITHUB_TOKEN: 'gh-token',
-        GITLAB_TOKEN: 'gl-token',
-        GITLAB_NAMESPACE: 'octocat',
-        NOTION_API_TOKEN: 'notion-token',
-        GOOGLE_CLIENT_ID: 'google-client-id',
-        GOOGLE_CLIENT_SECRET: 'google-client-secret',
-        GOOGLE_REFRESH_TOKEN: 'google-refresh-token',
-      },
-      runner,
-    };
-
-    runner.setResponse('git', ['--version'], {
-      stdout: 'git version 2.0',
-      stderr: '',
-      exitCode: 0,
-    });
-    runner.setResponse('curl', ['--version'], { stdout: 'curl 8.0', stderr: '', exitCode: 0 });
-    runner.setResponse('zip', ['--version'], { stdout: 'zip 3.0', stderr: '', exitCode: 0 });
-    runner.setResponse('pgrep', ['-i', 'brave'], { stdout: '', stderr: '', exitCode: 1 });
-    runner.setResponse('pgrep', ['-i', 'chrome'], { stdout: '', stderr: '', exitCode: 1 });
-
-    const braveBookmarksPath = '/home/user/.config/BraveSoftware/Brave-Browser/Default/Bookmarks';
-    fs.files.set(
-      braveBookmarksPath,
-      JSON.stringify({
-        checksum: 'abc',
-        version: 1,
-        roots: {
-          bookmark_bar: {
-            id: '1',
-            name: 'Bookmarks bar',
-            type: 'folder',
-            date_added: '0',
-            date_modified: '0',
-            children: [],
-          },
-        },
-      }),
-    );
-    fs.existsPaths.add(braveBookmarksPath);
-
-    const chromeBookmarksPath = '/home/user/.config/google-chrome/Default/Bookmarks';
-    fs.files.set(
-      chromeBookmarksPath,
-      JSON.stringify({
-        checksum: 'def',
-        version: 1,
-        roots: {
-          bookmark_bar: {
-            id: '1',
-            name: 'Bookmarks bar',
-            type: 'folder',
-            date_added: '0',
-            date_modified: '0',
-            children: [],
-          },
-        },
-      }),
-    );
-    fs.existsPaths.add(chromeBookmarksPath);
+    env = { HOME: '/home/user' };
   });
 
-  it('reports success when all backups succeed', async () => {
-    http.setResponse('GET', 'https://api.github.com/user', {
-      statusCode: 200,
-      body: JSON.stringify({ login: 'octocat' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://api.github.com/user/repos?page=1&per_page=100&type=all&sort=updated',
-      {
-        statusCode: 200,
-        body: JSON.stringify([]),
-      },
-    );
-    http.setResponse('GET', 'https://gitlab.com/api/v4/namespaces?search=octocat', {
-      statusCode: 200,
-      body: JSON.stringify([{ id: 42, full_path: 'octocat' }]),
-    });
-    http.setResponse('POST', 'https://api.notion.com/v1/search', {
-      statusCode: 200,
-      body: JSON.stringify({ results: [], next_cursor: null }),
-    });
-    http.setResponse('POST', 'https://oauth2.googleapis.com/token', {
-      statusCode: 200,
-      body: JSON.stringify({ access_token: 'google-access-token' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse(
-      'GET',
-      'https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=1000',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse('GET', PEOPLE_CONNECTIONS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ connections: [] }),
-    });
-    http.setResponse('GET', 'https://people.googleapis.com/v1/contactGroups?pageSize=1000', {
-      statusCode: 200,
-      body: JSON.stringify({ contactGroups: [] }),
-    });
-    http.setResponse('GET', PEOPLE_OTHER_CONTACTS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ otherContacts: [] }),
+  describe('default full run', () => {
+    it('runs every enabled step in backups.json order and reports OK', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('code-local', { calls }),
+        stubStep('code-gitlab', { calls }),
+        stubStep('notion', { calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'code-local', enabled: true },
+          { name: 'code-gitlab', enabled: true },
+          { name: 'notion', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['code-local', 'code-gitlab', 'notion']);
+      expect(summaryLines(logger)).toEqual([
+        '  code-local  : OK',
+        '  code-gitlab : OK',
+        '  notion      : OK',
+      ]);
+      expect(
+        logger.messages.some((m) => m.message.includes('All backups completed successfully')),
+      ).toBe(true);
+      expect(process.exitCode).toBeUndefined();
     });
 
-    const orchestrator = new BackupOrchestrator(context);
-    await orchestrator.run({ homeDir: '/home/user', logDir: '/logs' });
+    it('takes execution order from backups.json, not the registry', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { calls }),
+        stubStep('gamma', { calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'gamma', enabled: true },
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+        ]),
+      );
 
-    expect(
-      logger.messages.some((m) => m.message.includes('All backups completed successfully')),
-    ).toBe(true);
-    expect(process.exitCode).not.toBe(1);
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['gamma', 'alpha', 'beta']);
+    });
+
+    it('pads the summary column to the longest step name plus one', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('a', { calls }), stubStep('bbbbbbbbbbbbbbbbbb', { calls })];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'a', enabled: true },
+          { name: 'bbbbbbbbbbbbbbbbbb', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(summaryLines(logger)).toEqual([
+        '  a                  : OK',
+        '  bbbbbbbbbbbbbbbbbb : OK',
+      ]);
+    });
   });
 
-  it('skips unconfigured backups instead of running them with empty credentials', async () => {
-    delete context.env.GITLAB_TOKEN;
-    delete context.env.GITLAB_NAMESPACE;
-    delete context.env.NOTION_API_TOKEN;
+  describe('disabled steps', () => {
+    it('skips disabled steps without running them or checking credentials', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { requiredCredentials: ['BETA_TOKEN'], calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: false },
+        ]),
+      );
 
-    http.setResponse('GET', 'https://api.github.com/user', {
-      statusCode: 200,
-      body: JSON.stringify({ login: 'octocat' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://api.github.com/user/repos?page=1&per_page=100&type=all&sort=updated',
-      {
-        statusCode: 200,
-        body: JSON.stringify([]),
-      },
-    );
-    http.setResponse('POST', 'https://oauth2.googleapis.com/token', {
-      statusCode: 200,
-      body: JSON.stringify({ access_token: 'google-access-token' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse(
-      'GET',
-      'https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=1000',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse('GET', PEOPLE_CONNECTIONS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ connections: [] }),
-    });
-    http.setResponse('GET', 'https://people.googleapis.com/v1/contactGroups?pageSize=1000', {
-      statusCode: 200,
-      body: JSON.stringify({ contactGroups: [] }),
-    });
-    http.setResponse('GET', PEOPLE_OTHER_CONTACTS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ otherContacts: [] }),
-    });
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
 
-    const orchestrator = new BackupOrchestrator(context);
-    await orchestrator.run({ homeDir: '/home/user', logDir: '/logs' });
-
-    const summary = logger.messages.filter((m) => m.message.includes(': SKIPPED'));
-    expect(summary).toHaveLength(2);
-    expect(summary.some((m) => m.message.includes('code-gitlab'))).toBe(true);
-    expect(summary.some((m) => m.message.includes('notion'))).toBe(true);
-    expect(
-      logger.messages.some((m) => m.message.includes('GITLAB_TOKEN and GITLAB_NAMESPACE')),
-    ).toBe(true);
-    expect(
-      logger.messages.some((m) => m.message.includes('NOTION_API_TOKEN is not configured')),
-    ).toBe(true);
-    expect(process.exitCode).toBeUndefined();
+      expect(calls).toEqual(['alpha']);
+      expect(summaryLines(logger)).toEqual(['  alpha : OK', '  beta  : SKIPPED (disabled)']);
+      expect(
+        logger.messages.some((m) => m.message.includes('Skipping beta: disabled in backups.json')),
+      ).toBe(true);
+      expect(process.exitCode).toBeUndefined();
+    });
   });
 
-  it('continues with remaining backups when Chrome bookmarks are missing', async () => {
-    fs.files.delete('/home/user/.config/google-chrome/Default/Bookmarks');
-    fs.existsPaths.delete('/home/user/.config/google-chrome/Default/Bookmarks');
-    fs.files.delete('/home/user/.config/google-chrome/Default/AccountBookmarks');
-    fs.existsPaths.delete('/home/user/.config/google-chrome/Default/AccountBookmarks');
+  describe('missing credentials', () => {
+    it('skips enabled steps whose required credentials are unsatisfied', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { requiredCredentials: ['BETA_TOKEN', 'BETA_NAMESPACE'], calls }),
+      ];
+      env.BETA_TOKEN = 'set-but-namespace-missing';
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+        ]),
+      );
 
-    http.setResponse('GET', 'https://api.github.com/user', {
-      statusCode: 200,
-      body: JSON.stringify({ login: 'octocat' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://api.github.com/user/repos?page=1&per_page=100&type=all&sort=updated',
-      {
-        statusCode: 200,
-        body: JSON.stringify([]),
-      },
-    );
-    http.setResponse('GET', 'https://gitlab.com/api/v4/namespaces?search=octocat', {
-      statusCode: 200,
-      body: JSON.stringify([{ id: 42, full_path: 'octocat' }]),
-    });
-    http.setResponse('POST', 'https://api.notion.com/v1/search', {
-      statusCode: 200,
-      body: JSON.stringify({ results: [], next_cursor: null }),
-    });
-    http.setResponse('POST', 'https://oauth2.googleapis.com/token', {
-      statusCode: 200,
-      body: JSON.stringify({ access_token: 'google-access-token' }),
-    });
-    http.setResponse(
-      'GET',
-      'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse(
-      'GET',
-      'https://tasks.googleapis.com/tasks/v1/users/@me/lists?maxResults=1000',
-      {
-        statusCode: 200,
-        body: JSON.stringify({ items: [] }),
-      },
-    );
-    http.setResponse('GET', PEOPLE_CONNECTIONS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ connections: [] }),
-    });
-    http.setResponse('GET', 'https://people.googleapis.com/v1/contactGroups?pageSize=1000', {
-      statusCode: 200,
-      body: JSON.stringify({ contactGroups: [] }),
-    });
-    http.setResponse('GET', PEOPLE_OTHER_CONTACTS_URL, {
-      statusCode: 200,
-      body: JSON.stringify({ otherContacts: [] }),
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['alpha']);
+      expect(summaryLines(logger)).toEqual(['  alpha : OK', '  beta  : SKIPPED (no credentials)']);
+      expect(
+        logger.messages.some((m) =>
+          m.message.includes('Skipping beta: missing credentials: BETA_NAMESPACE'),
+        ),
+      ).toBe(true);
+      expect(process.exitCode).toBeUndefined();
     });
 
-    const orchestrator = new BackupOrchestrator(context);
-    await orchestrator.run({ homeDir: '/home/user', logDir: '/logs' });
+    it('treats empty credential values as missing', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { requiredCredentials: ['ALPHA_TOKEN'], calls })];
+      env.ALPHA_TOKEN = '';
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
 
-    expect(
-      logger.messages.some(
-        (m) => m.message.includes('chrome-bookmarks') && m.message.includes('FAILED'),
-      ),
-    ).toBe(true);
-    expect(logger.messages.some((m) => m.message.includes('One or more backups failed'))).toBe(
-      true,
-    );
-    expect(process.exitCode).toBe(1);
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
 
-    process.exitCode = undefined;
+      expect(calls).toEqual([]);
+      expect(summaryLines(logger)).toContain('  alpha : SKIPPED (no credentials)');
+    });
+  });
+
+  describe('failure propagation', () => {
+    it('continues with the remaining steps when one fails and exits non-zero', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { outcome: 'fail', calls }),
+        stubStep('gamma', { calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+          { name: 'gamma', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['alpha', 'beta', 'gamma']);
+      expect(summaryLines(logger)).toContain('  beta  : FAILED');
+      expect(logger.messages.some((m) => m.message.includes('One or more backups failed'))).toBe(
+        true,
+      );
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = undefined;
+    });
+  });
+
+  describe('post steps', () => {
+    it('runs post steps after all backup steps even when a backup failed', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { outcome: 'fail', calls }),
+        stubStep('post-step', { kind: 'post', calls }),
+        stubStep('beta', { calls }),
+      ];
+      // The post step is listed first on purpose: grouping by kind, not file
+      // position, keeps post steps after the backups.
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'post-step', enabled: true },
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['alpha', 'beta', 'post-step']);
+      expect(summaryLines(logger)).toContain('  post-step : OK');
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = undefined;
+    });
+
+    it('skips a disabled post step', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('post-step', { kind: 'post', calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'post-step', enabled: false },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['alpha']);
+      expect(summaryLines(logger)).toContain('  post-step : SKIPPED (disabled)');
+    });
+  });
+
+  describe('config validation', () => {
+    it('rejects a step name that is absent from the registry, without executing anything', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'typo-step', enabled: true },
+        ]),
+      );
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(/Unknown step "typo-step".*Known steps: alpha/);
+
+      expect(calls).toEqual([]);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('rejects a registered step that backups.json fails to list', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls }), stubStep('beta', { calls })];
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(/must list every registered step; missing: beta/);
+
+      expect(calls).toEqual([]);
+    });
+
+    it('rejects a step listed twice', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'alpha', enabled: false },
+        ]),
+      );
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(/Duplicate step "alpha"/);
+
+      expect(calls).toEqual([]);
+    });
+
+    it('rejects a missing file at both resolution locations without executing', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(BackupConfigError);
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(
+        /not found in the project root \(\/project\) or the module root \(\/module\)/,
+      );
+
+      expect(calls).toEqual([]);
+    });
+
+    it('rejects malformed JSON without executing', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile('/project/backups.json', '{ not json');
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(/Malformed JSON in \/project\/backups\.json/);
+
+      expect(calls).toEqual([]);
+    });
+
+    it('rejects an unknown schema version without executing', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile('/project/backups.json', JSON.stringify({ version: 2, modules: [] }));
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig),
+      ).rejects.toThrow(
+        /Unsupported backups\.json version in \/project\/backups\.json: expected 1, got 2/,
+      );
+
+      expect(calls).toEqual([]);
+    });
+
+    it('prefers the project-root config wholesale over the module-root copy', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { calls }),
+        stubStep('gamma', { calls }),
+      ];
+      await fs.writeFile(
+        '/module/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+          { name: 'gamma', enabled: true },
+        ]),
+      );
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: false },
+          { name: 'gamma', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      expect(calls).toEqual(['alpha', 'gamma']);
+      expect(summaryLines(logger)).toContain('  beta  : SKIPPED (disabled)');
+    });
+  });
+});
+
+describe('orchestratedSteps registry', () => {
+  const find = (name: string): BackupStepDescriptor | undefined =>
+    orchestratedSteps.find((step) => step.name === name);
+
+  it('ships a committed backups.json that lists every registered step, all enabled', async () => {
+    const moduleRoot = resolveModuleRoot();
+    // Passing the module root for both locations reads the committed file
+    // regardless of any project-level copy on the machine running tests.
+    const { config } = await loadBackupsConfig(new RealFileSystem(), moduleRoot, moduleRoot);
+
+    expect(config.modules.map((m) => m.name)).toEqual(orchestratedSteps.map((s) => s.name));
+    expect(config.modules.every((m) => m.enabled)).toBe(true);
+  });
+
+  it('runs every step as a backup by default', () => {
+    expect(orchestratedSteps.every((step) => (step.kind ?? 'backup') === 'backup')).toBe(true);
+  });
+
+  it('requires GitLab and Notion credentials for those steps', () => {
+    expect(find('code-gitlab')?.requiredCredentials).toEqual(['GITLAB_TOKEN', 'GITLAB_NAMESPACE']);
+    expect(find('notion')?.requiredCredentials).toEqual(['NOTION_API_TOKEN']);
+  });
+
+  it('requires the shared Google OAuth credentials for each Google step', () => {
+    for (const name of ['google-calendar', 'google-tasks', 'google-contacts']) {
+      expect(find(name)?.requiredCredentials).toEqual([
+        'GOOGLE_CLIENT_ID',
+        'GOOGLE_CLIENT_SECRET',
+        'GOOGLE_REFRESH_TOKEN',
+      ]);
+    }
   });
 });

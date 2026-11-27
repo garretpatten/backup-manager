@@ -1,4 +1,4 @@
-import { loadEnvFile, saveEnvValue } from '../../src/env.js';
+import { boolEnv, loadEnvFile, numEnv, requiredEnv, saveEnvValue } from '../../src/env.js';
 import { MockFileSystem } from '../test-helpers.js';
 
 describe('loadEnvFile', () => {
@@ -89,6 +89,58 @@ describe('loadEnvFile', () => {
     await loadEnvFile(fs, env, '/project');
 
     expect(env.BACKUP_ROOT).toBe('$HOME/GitHub-GitLab-Backup');
+  });
+});
+
+describe('requiredEnv', () => {
+  it('returns the value when the variable is set', () => {
+    expect(requiredEnv({ TOKEN: 'abc' }, 'TOKEN')).toBe('abc');
+  });
+
+  it('throws naming the variable when it is unset or empty', () => {
+    expect(() => requiredEnv({}, 'TOKEN')).toThrow('Missing required environment variable: TOKEN');
+    expect(() => requiredEnv({ TOKEN: '' }, 'TOKEN')).toThrow(
+      'Missing required environment variable: TOKEN',
+    );
+  });
+});
+
+describe('boolEnv', () => {
+  it('returns the default when the variable is unset or empty', () => {
+    expect(boolEnv({}, 'FLAG', false)).toBe(false);
+    expect(boolEnv({}, 'FLAG', true)).toBe(true);
+    expect(boolEnv({ FLAG: '' }, 'FLAG', false)).toBe(false);
+  });
+
+  it('parses true and false case-insensitively', () => {
+    expect(boolEnv({ FLAG: 'true' }, 'FLAG', false)).toBe(true);
+    expect(boolEnv({ FLAG: 'TRUE' }, 'FLAG', false)).toBe(true);
+    expect(boolEnv({ FLAG: 'True' }, 'FLAG', false)).toBe(true);
+    expect(boolEnv({ FLAG: 'false' }, 'FLAG', true)).toBe(false);
+    expect(boolEnv({ FLAG: 'FALSE' }, 'FLAG', true)).toBe(false);
+  });
+
+  it('falls back to the default for unrecognized values instead of guessing', () => {
+    expect(boolEnv({ FLAG: 'yes' }, 'FLAG', false)).toBe(false);
+    expect(boolEnv({ FLAG: 'yes' }, 'FLAG', true)).toBe(true);
+    expect(boolEnv({ FLAG: '0' }, 'FLAG', true)).toBe(true);
+  });
+});
+
+describe('numEnv', () => {
+  it('returns the default when the variable is unset or empty', () => {
+    expect(numEnv({}, 'DELAY', 0.35)).toBe(0.35);
+    expect(numEnv({ DELAY: '' }, 'DELAY', 0.35)).toBe(0.35);
+  });
+
+  it('parses numeric values', () => {
+    expect(numEnv({ DELAY: '0.5' }, 'DELAY', 0.35)).toBe(0.5);
+    expect(numEnv({ DELAY: '2' }, 'DELAY', 0.35)).toBe(2);
+  });
+
+  it('falls back to the default for non-numeric values', () => {
+    expect(numEnv({ DELAY: 'fast' }, 'DELAY', 0.35)).toBe(0.35);
+    expect(numEnv({ DELAY: 'NaN' }, 'DELAY', 0.35)).toBe(0.35);
   });
 });
 

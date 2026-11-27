@@ -70,6 +70,54 @@ export async function loadEnvFile(
 }
 
 /**
+ * Reads a required environment variable, failing loudly when it is unset or
+ * empty. Callers whose variables are covered by a step's requiredCredentials
+ * never hit this path; it exists so a descriptor invoked without its
+ * credentials reports the missing variable instead of failing downstream.
+ */
+export function requiredEnv(env: NodeJS.ProcessEnv, key: string): string {
+  const value = env[key];
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
+}
+
+/**
+ * Parses a boolean environment variable with one convention across all
+ * backups: unset or empty falls back to `defaultValue`, "true"/"false"
+ * (case-insensitive) are honored, and any other value also falls back rather
+ * than guessing intent.
+ */
+export function boolEnv(env: NodeJS.ProcessEnv, key: string, defaultValue: boolean): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw === '') {
+    return defaultValue;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'true') {
+    return true;
+  }
+  if (normalized === 'false') {
+    return false;
+  }
+  return defaultValue;
+}
+
+/**
+ * Parses a numeric environment variable, falling back to `defaultValue` when
+ * the variable is unset, empty, or not a finite number.
+ */
+export function numEnv(env: NodeJS.ProcessEnv, key: string, defaultValue: number): number {
+  const raw = env[key];
+  if (raw === undefined || raw === '') {
+    return defaultValue;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : defaultValue;
+}
+
+/**
  * Create or update a single key in the project .env file, preserving all other
  * lines. Used to persist tokens obtained during interactive setup.
  */
