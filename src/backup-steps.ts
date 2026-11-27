@@ -10,6 +10,9 @@ import { GoogleOAuthCredentials } from './google-auth.js';
 import { LocalBackup, LocalBackupConfig } from './local-backup.js';
 import { NotionBackup, NotionBackupConfig } from './notion-backup.js';
 import { ObsidianNotesBackup, ObsidianNotesBackupConfig } from './obsidian-notes-backup.js';
+import { SpotifyBackup, SpotifyBackupConfig } from './spotify-backup.js';
+import { SpotifyOAuthCredentials } from './spotify-auth.js';
+import { TodoistBackup, TodoistBackupConfig } from './todoist-backup.js';
 import { BackupContext } from './types.js';
 import path from 'node:path';
 
@@ -59,13 +62,24 @@ function googleCredentials(env: NodeJS.ProcessEnv): GoogleOAuthCredentials {
   };
 }
 
+function spotifyCredentials(env: NodeJS.ProcessEnv): SpotifyOAuthCredentials {
+  return {
+    clientId: env.SPOTIFY_CLIENT_ID || '',
+    clientSecret: env.SPOTIFY_CLIENT_SECRET || '',
+    refreshToken: env.SPOTIFY_REFRESH_TOKEN || '',
+  };
+}
+
 /**
  * The orchestrated steps, in the registry sense only; the run order comes
  * from backups.json. google-photos is deliberately absent: Takeout exports
  * are requested by hand and expire after about a week, so a cron step would
  * always fail. gitlab-mirror-cleanup is likewise absent because it is a
  * composite tail of the code-gitlab step, also runnable standalone via
- * `npm run backup:code-gitlab-cleanup`.
+ * `npm run backup:code-gitlab-cleanup`. spotify and todoist are registered
+ * but ship disabled: both modules are deprecated ports kept runnable
+ * standalone (`npm run backup:spotify`, `npm run backup:todoist`) for the
+ * day they are needed again.
  */
 export const orchestratedSteps: readonly BackupStepDescriptor[] = [
   {
@@ -184,6 +198,32 @@ export const orchestratedSteps: readonly BackupStepDescriptor[] = [
         projectRoot: resolveProjectRoot(),
       };
       await new GoogleContactsBackup(context).run(config);
+    },
+  },
+  {
+    name: 'spotify',
+    requiredCredentials: ['SPOTIFY_CLIENT_ID', 'SPOTIFY_CLIENT_SECRET', 'SPOTIFY_REFRESH_TOKEN'],
+    run: async (context) => {
+      const config: SpotifyBackupConfig = {
+        credentials: spotifyCredentials(context.env),
+        homeDir: homeDir(context.env),
+        logDir: logDir(),
+        playlistLimit: numEnv(context.env, 'PLAYLIST_LIMIT', 50),
+        trackLimit: numEnv(context.env, 'TRACK_LIMIT', 100),
+      };
+      await new SpotifyBackup(context).run(config);
+    },
+  },
+  {
+    name: 'todoist',
+    requiredCredentials: ['TODOIST_API_TOKEN'],
+    run: async (context) => {
+      const config: TodoistBackupConfig = {
+        apiToken: requiredEnv(context.env, 'TODOIST_API_TOKEN'),
+        homeDir: homeDir(context.env),
+        logDir: logDir(),
+      };
+      await new TodoistBackup(context).run(config);
     },
   },
 ];

@@ -443,14 +443,21 @@ describe('orchestratedSteps registry', () => {
   const find = (name: string): BackupStepDescriptor | undefined =>
     orchestratedSteps.find((step) => step.name === name);
 
-  it('ships a committed backups.json that lists every registered step, all enabled', async () => {
+  it('ships a committed backups.json that lists every registered step', async () => {
     const moduleRoot = resolveModuleRoot();
     // Passing the module root for both locations reads the committed file
     // regardless of any project-level copy on the machine running tests.
     const { config } = await loadBackupsConfig(new RealFileSystem(), moduleRoot, moduleRoot);
 
     expect(config.modules.map((m) => m.name)).toEqual(orchestratedSteps.map((s) => s.name));
-    expect(config.modules.every((m) => m.enabled)).toBe(true);
+  });
+
+  it('ships every step enabled except the deprecated spotify and todoist pair', async () => {
+    const moduleRoot = resolveModuleRoot();
+    const { config } = await loadBackupsConfig(new RealFileSystem(), moduleRoot, moduleRoot);
+
+    const deprecated = new Set(['spotify', 'todoist']);
+    expect(config.modules.every((m) => m.enabled === !deprecated.has(m.name))).toBe(true);
   });
 
   it('runs every step as a backup by default', () => {
@@ -470,5 +477,17 @@ describe('orchestratedSteps registry', () => {
         'GOOGLE_REFRESH_TOKEN',
       ]);
     }
+  });
+
+  it('requires Spotify OAuth credentials for the deprecated spotify step', () => {
+    expect(find('spotify')?.requiredCredentials).toEqual([
+      'SPOTIFY_CLIENT_ID',
+      'SPOTIFY_CLIENT_SECRET',
+      'SPOTIFY_REFRESH_TOKEN',
+    ]);
+  });
+
+  it('requires a Todoist API token for the deprecated todoist step', () => {
+    expect(find('todoist')?.requiredCredentials).toEqual(['TODOIST_API_TOKEN']);
   });
 });

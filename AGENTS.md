@@ -97,7 +97,7 @@ runs Vitest and `tsc --noEmit`.
 | -------------------------------------------------------- | -------------------------------------------------------- |
 | `src/`                                                   | Backup implementations, API clients, shared helpers      |
 | `__tests__/unit/`                                        | Vitest unit tests with mocked I/O                        |
-| `code/`, `notion/`, …                                    | Thin Bash wrappers around the `src/` entry points        |
+| `code/`, `notion/`, `spotify/`, `todoist/`, …            | Thin Bash wrappers around the `src/` entry points        |
 | `run-all.sh`                                             | Orchestrator wrapper (`src/run-all.ts`)                  |
 | `logs/`                                                  | Runtime logs (gitignored)                                |
 | `.env.example`                                           | Documented environment variables                         |
