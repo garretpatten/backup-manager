@@ -65,6 +65,12 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   stores the refresh token for unattended runs
 - **Google Photos**: Takeout archive download with resume and verification, merged
   into a flat, deduplicated library tracked by a SHA-256 state manifest
+- **Spotify export** (deprecated, disabled by default): user profile plus
+  every playlist with its tracks and metadata as JSON, zipped per run, with a
+  one-time OAuth authorization helper
+- **Todoist export** (deprecated, disabled by default): every task, project,
+  and label as JSON via the REST v1 API, zipped per run and failing loudly
+  on fetch errors
 - **Orchestration**: `run-all` executes the steps listed in `backups.json`
   sequentially, skips disabled steps and steps missing credentials, and
   reports per-step status with combined logging
@@ -84,12 +90,16 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   - `google-contacts-backup.ts` — Google Contacts export
   - `google-photos-backup.ts` — Google Photos Takeout backup (download,
     extract, merge)
+  - `spotify-backup.ts` — Spotify profile and playlist export (deprecated)
+  - `spotify-auth.ts` — Spotify OAuth 2.0 token refresh and one-time
+    authorization helper (deprecated)
+  - `todoist-backup.ts` — Todoist tasks/projects/labels export (deprecated)
   - `run-all.ts` — Config-driven orchestrator running the steps listed in
     `backups.json`
   - `backup-config.ts` — `backups.json` resolution, parsing, and validation
   - `backup-steps.ts` — Registry of orchestrated step descriptors (name,
     required credentials, kind, config assembly)
-  - `github.ts`, `gitlab.ts`, `notion.ts` — API clients
+  - `github.ts`, `gitlab.ts`, `notion.ts`, `spotify.ts`, `todoist.ts` — API clients
   - `google-calendar.ts`, `google-tasks.ts`, `google-contacts.ts` — Google API clients
   - `google-auth.ts` — Shared Google OAuth 2.0 token refresh
   - `google-photos-download.ts`, `google-photos-takeout.ts`,
@@ -119,6 +129,11 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   - `google-contacts-backup.sh` — Thin wrapper around `google-contacts-backup.ts`
 - **`google-photos/`** — Google Photos Takeout backup
   - `google-photos-backup.sh` — Thin wrapper around `google-photos-backup.ts`
+- **`spotify/`** — Deprecated Spotify backup wrappers
+  - `spotify-backup.sh` — Thin wrapper around `spotify-backup.ts`
+  - `spotify-auth.sh` — Thin wrapper around `spotify-auth.ts`
+- **`todoist/`** — Deprecated Todoist backup wrapper
+  - `todoist-backup.sh` — Thin wrapper around `todoist-backup.ts`
 - **`run-all.sh`** — Thin wrapper around `run-all.ts`
 - **`backups.json`** — Committed orchestrator configuration: the ordered
   list of backup steps and their enable state
@@ -190,8 +205,9 @@ sudo yum install git curl zip
 ## Export Archives & External Drive Copy
 
 All zip-producing backups (`code`, `notion`, `obsidian-notes`,
-`google-calendar`, `google-tasks`, `google-contacts`) write their zips into a
-dated directory instead of directly into the home directory:
+`google-calendar`, `google-tasks`, `google-contacts`, and — when enabled —
+the deprecated `spotify` and `todoist`) write their zips into a dated
+directory instead of directly into the home directory:
 
 - **Local**: `~/Exports/Exports_YYYY-MM-DD/`
 - **External drive**: when a drive labeled `T7 Shield` is mounted, each zip is
@@ -323,6 +339,61 @@ automatically re-runs the browser authorization flow (up to three attempts)
 and saves the new token to `.env`. If you are not present to approve the
 prompt, the authorization times out and the backup fails gracefully so the
 rest of the orchestrated backups continue.
+
+### Spotify backup (deprecated)
+
+The Spotify module is ported from the retired standalone
+[spotify-backup-tool](https://github.com/garretpatten/spotify-backup-tool) and
+is disabled by default (`"enabled": false` in `backups.json`). Create an app
+in the [Spotify developer dashboard](https://developer.spotify.com/dashboard)
+to get the client credentials; use `http://127.0.0.1` as the redirect URI
+(the helper binds an ephemeral loopback port).
+
+```bash
+# Required
+SPOTIFY_CLIENT_ID="your_spotify_app_client_id"
+SPOTIFY_CLIENT_SECRET="your_spotify_app_client_secret"
+
+# Required; obtained by the one-time authorization helper below
+SPOTIFY_REFRESH_TOKEN=""
+
+# Optional tuning (defaults shown; the API caps playlists at 50, tracks at 100)
+PLAYLIST_LIMIT="50"
+TRACK_LIMIT="100"
+```
+
+You do not need to create a refresh token yourself. Run `npm run
+auth:spotify` (or `./spotify/spotify-auth.sh`) once in an interactive
+terminal: the helper starts a local listener, prints a Spotify consent URL
+to open in your browser, and saves the refresh token to `.env`. The consent
+requests only read scopes:
+
+- `playlist-read-private`
+- `playlist-read-collaborative`
+- `user-library-read`
+- `user-read-email`
+- `user-read-private`
+
+**Note:** a refresh token can rot (expire or be revoked) while the module
+sits disabled — re-run the auth helper when you enable the step. Unlike the
+Google modules, the orchestrated run never starts the interactive flow; a
+dead token fails the step loudly instead.
+
+### Todoist backup (deprecated)
+
+The Todoist module is restored from `system-scripts` history and is disabled
+by default (`"enabled": false` in `backups.json`).
+
+```bash
+# Required
+TODOIST_API_TOKEN="your_todoist_api_token"
+```
+
+Create the token at **Todoist Settings → Integrations → Developer**. The
+client speaks the current REST v1 API (`https://api.todoist.com/api/v1`,
+cursor pagination, up to 200 items per page), but it has not been smoke-tested
+against a live account since the restore — verify a standalone run works
+before enabling the step in `backups.json`.
 
 ### Google Photos backup
 
@@ -860,6 +931,119 @@ for download runs; the directories can also be adjusted with
 
 ---
 
+## Spotify Backup (`spotify/spotify-backup.sh`)
+
+> **Deprecated and disabled by default.** The step is registered in the
+> orchestrator but ships as `"enabled": false` in `backups.json`; `npm run
+backup:all` reports it as `SKIPPED (disabled)`. The standalone commands
+> below bypass `backups.json` and always run.
+
+Exports the user profile and every playlist of the authenticated user —
+metadata plus full track listings — as JSON files, zipped into the dated
+export directory. Ported from the retired standalone
+[spotify-backup-tool](https://github.com/garretpatten/spotify-backup-tool)
+onto this repository's interfaces with zero runtime dependencies (no
+`spotify-web-api-node`, `archiver`, `dotenv`, or `fs-extra`).
+
+### Spotify Backup Features
+
+- Guides you through a one-time Spotify authorization via
+  `npm run auth:spotify` (or `./spotify/spotify-auth.sh`) and saves the
+  refresh token to `.env`; the first standalone `npm run backup:spotify`
+  run also offers the same flow when no token is saved
+- Exports the user profile as `profile.json`
+- Exports every playlist (public and private, including collaborative ones
+  visible to the account) with its tracks and metadata, one JSON file per
+  playlist under `public/` or `private/`
+- Preserves the original tool's track projection: name, artists, album
+  (with release date and cover images), external URLs, duration, explicit
+  flag, popularity, preview URL, and track/disc numbers
+- Continues exporting the remaining playlists when one playlist fails and
+  exits non-zero, so a partial export is never mistaken for success
+- Creates a zip backup: `~/Exports/Exports_YYYY-MM-DD/Spotify-Export_YYYY-MM-DD.zip`
+
+### Spotify Backup Usage
+
+```bash
+./spotify/spotify-backup.sh
+```
+
+Or via npm:
+
+```bash
+npm run backup:spotify
+```
+
+To (re)authorize first:
+
+```bash
+./spotify/spotify-auth.sh
+# or
+npm run auth:spotify
+```
+
+### Spotify Backup Output
+
+- **Backup archive**: `~/Exports/Exports_YYYY-MM-DD/Spotify-Export_YYYY-MM-DD.zip`
+- **Logs**: `logs/spotify-backup-YYYYMMDD-HHMMSS.log`
+- **Errors**: `logs/spotify-errors-YYYYMMDD-HHMMSS.log`
+
+The zip contains `profile.json` plus `public/` and `private/` directories
+with one JSON file per playlist.
+
+---
+
+## Todoist Backup (`todoist/todoist-backup.sh`)
+
+> **Deprecated and disabled by default.** The step is registered in the
+> orchestrator but ships as `"enabled": false` in `backups.json`; `npm run
+backup:all` reports it as `SKIPPED (disabled)`. The standalone commands
+> below bypass `backups.json` and always run.
+
+Exports every Todoist task, project, and label as JSON files, zipped into
+the dated export directory. Restored from `system-scripts` git history
+(the module was removed there in commit `e1a6d2c`).
+
+### Todoist Backup Features
+
+- Paginates through the REST v1 API (`https://api.todoist.com/api/v1`) with
+  the maximum page size of 200 and cursor-based continuation
+- Writes `tasks.json`, `projects.json`, and `labels.json` into a dated
+  export directory
+- Fails loudly: a failed tasks, projects, or labels fetch fails the whole
+  run — the old module swallowed project and label errors and wrote empty
+  arrays, so a dead token produced an empty, successful-looking backup
+- Stores the zip via the shared export-directory convention instead of
+  dropping it in the home directory like the old module did
+- Creates a zip backup: `~/Exports/Exports_YYYY-MM-DD/Todoist-Export_YYYY-MM-DD.zip`
+
+### Todoist Backup Usage
+
+```bash
+./todoist/todoist-backup.sh
+```
+
+Or via npm:
+
+```bash
+npm run backup:todoist
+```
+
+### Todoist Backup Output
+
+- **Backup archive**: `~/Exports/Exports_YYYY-MM-DD/Todoist-Export_YYYY-MM-DD.zip`
+- **Logs**: `logs/todoist-backup-YYYYMMDD-HHMMSS.log`
+- **Errors**: `logs/todoist-errors-YYYYMMDD-HHMMSS.log`
+
+### Todoist Backup Caveats
+
+- The restored client speaks the current cursor-based REST v1 pagination,
+  but it has not been smoke-tested against a live Todoist account since the
+  restore. Run it standalone once and check the output before enabling the
+  step in `backups.json`.
+
+---
+
 ## Run All Backups
 
 To run every orchestrated backup in one unattended pass:
@@ -920,19 +1104,29 @@ with an `enabled` flag:
 
 ### Orchestrated steps and credentials
 
-The nine orchestrated steps and the credentials each requires:
+The eleven orchestrated steps and the credentials each requires:
 
-| Step               | Required credentials                                               |
-| ------------------ | ------------------------------------------------------------------ |
-| `code-local`       | none (`GITHUB_TOKEN` optional for private repositories)            |
-| `code-gitlab`      | `GITLAB_TOKEN`, `GITLAB_NAMESPACE`                                 |
-| `notion`           | `NOTION_API_TOKEN`                                                 |
-| `brave-bookmarks`  | none                                                               |
-| `chrome-bookmarks` | none                                                               |
-| `obsidian-notes`   | none                                                               |
-| `google-calendar`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
-| `google-tasks`     | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
-| `google-contacts`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` |
+| Step               | Required credentials                                                  |
+| ------------------ | --------------------------------------------------------------------- |
+| `code-local`       | none (`GITHUB_TOKEN` optional for private repositories)               |
+| `code-gitlab`      | `GITLAB_TOKEN`, `GITLAB_NAMESPACE`                                    |
+| `notion`           | `NOTION_API_TOKEN`                                                    |
+| `brave-bookmarks`  | none                                                                  |
+| `chrome-bookmarks` | none                                                                  |
+| `obsidian-notes`   | none                                                                  |
+| `google-calendar`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`    |
+| `google-tasks`     | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`    |
+| `google-contacts`  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`    |
+| `spotify`          | `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REFRESH_TOKEN` |
+| `todoist`          | `TODOIST_API_TOKEN`                                                   |
+
+The `spotify` and `todoist` steps are deprecated modules: both are
+registered above but ship disabled (`"enabled": false`) in the committed
+`backups.json`, so an orchestrated run reports them as `SKIPPED (disabled)`
+without checking credentials. Flip the flag in your project-root
+`backups.json` to re-enable either one; the standalone
+`npm run backup:spotify` and `npm run backup:todoist` scripts bypass
+`backups.json` entirely and always run.
 
 An enabled step whose credentials are unset or empty is skipped with a
 warning — `SKIPPED (no credentials)` — instead of failing with confusing API
@@ -947,7 +1141,7 @@ misconfiguration to fix.
 
 ### Steps that are not orchestrated
 
-`backups.json` lists the nine orchestrated steps only. These are not registry
+`backups.json` lists the eleven orchestrated steps only. These are not registry
 steps, by design:
 
 - `google-photos` — user-initiated: Takeout exports are requested by hand and
@@ -1012,6 +1206,16 @@ All scripts create detailed logs in `logs/`:
 
 - `google-photos-backup-YYYYMMDD-HHMMSS.log`
 - `google-photos-errors-YYYYMMDD-HHMMSS.log`
+
+**Spotify Export:**
+
+- `spotify-backup-YYYYMMDD-HHMMSS.log`
+- `spotify-errors-YYYYMMDD-HHMMSS.log`
+
+**Todoist Export:**
+
+- `todoist-backup-YYYYMMDD-HHMMSS.log`
+- `todoist-errors-YYYYMMDD-HHMMSS.log`
 
 **Orchestrator:**
 
@@ -1146,6 +1350,22 @@ Logs include:
       Google Cloud Console
     - Review `logs/google-contacts-errors-*.log` for details
 
+21. **Spotify: "Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET"**
+    - Add your Spotify app credentials to `.env` (see the Spotify backup
+      section above), then run `npm run auth:spotify` once interactively to
+      save the refresh token
+
+22. **Spotify: "Spotify OAuth token refresh failed"**
+    - The saved refresh token has expired or been revoked — it can rot while
+      the module sits disabled; re-run `npm run auth:spotify` to re-authorize
+    - Review `logs/spotify-errors-*.log` for details
+
+23. **Todoist: "Todoist API error"**
+    - Verify `TODOIST_API_TOKEN` in `.env` (Todoist Settings → Integrations →
+      Developer)
+    - A failed tasks/projects/labels fetch fails the run by design; review
+      `logs/todoist-errors-*.log` for details
+
 ### Getting Help
 
 Check the error log files for detailed error messages:
@@ -1184,6 +1404,12 @@ crontab -e
 # by hand, roughly twice a year), so there is no cron entry for them. When a
 # new export is ready, set GOOGLE_PHOTOS_TAKEOUT_URLS in .env and run:
 #   ./google-photos/google-photos-backup.sh --mode full
+#
+# The deprecated spotify and todoist modules ship disabled in backups.json;
+# there is no cron entry for them either. Run them standalone only when
+# needed, after setting their credentials:
+#   npm run backup:spotify   # requires SPOTIFY_* credentials
+#   npm run backup:todoist   # requires TODOIST_API_TOKEN
 ```
 
 **Note:** When using cron, make sure environment variables are available in
@@ -1240,6 +1466,8 @@ git submodule update --init --recursive
 - [Google Calendar API Documentation](https://developers.google.com/calendar/api/v3/reference)
 - [Google Tasks API Documentation](https://developers.google.com/tasks/reference/rest)
 - [Google People API Documentation](https://developers.google.com/people/api/rest)
+- [Spotify Web API Documentation](https://developer.spotify.com/documentation/web-api)
+- [Todoist API Documentation](https://developer.todoist.com/api/v1)
 - [Git Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
 - [GitLab Personal Access Tokens](https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html)
 

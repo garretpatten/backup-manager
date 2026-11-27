@@ -9,6 +9,8 @@
     { "name": "obsidian-notes", "enabled": true },
     { "name": "google-calendar", "enabled": true },
     { "name": "google-tasks", "enabled": true },
-    { "name": "google-contacts", "enabled": true }
+    { "name": "google-contacts", "enabled": true },
+    { "name": "spotify", "enabled": false },
+    { "name": "todoist", "enabled": false }
   ]
 }
