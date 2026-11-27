@@ -157,6 +157,38 @@ export async function storeArchive(
   return archivePath;
 }
 
+export const ARCHIVE_MANIFEST_NAME = 'manifest.sha256';
+
+/**
+ * Rewrites `manifest.sha256` in the dated local export directory so it
+ * lists every stored archive with its SHA-256 digest, in `sha256sum -c`
+ * compatible form. Each zip-producing backup refreshes it after its
+ * archive lands, so by the end of a run the manifest covers every archive
+ * of the day and a later restore — or an upload pipeline — can re-verify
+ * content independently of this tool.
+ */
+export async function writeArchiveManifest(
+  fs: FileSystem,
+  env: NodeJS.ProcessEnv,
+  logger: Logger,
+  homeDir: string,
+  date: Date,
+): Promise<void> {
+  const exportDir = resolveLocalExportDir(homeDir, date, env);
+  const entries = await fs.readdir(exportDir).catch(() => [] as string[]);
+  const archives = entries.filter((name) => name.toLowerCase().endsWith('.zip')).sort();
+  if (archives.length === 0) {
+    logger.warn(`No archives found in ${exportDir}; skipping manifest`);
+    return;
+  }
+  const lines = await Promise.all(
+    archives.map(async (name) => `${await fs.hashFile(path.join(exportDir, name))}  ${name}`),
+  );
+  const manifestPath = path.join(exportDir, ARCHIVE_MANIFEST_NAME);
+  await fs.writeFile(manifestPath, `${lines.join('\n')}\n`);
+  logger.success(`Archive manifest written: ${manifestPath}`);
+}
+
 /**
  * Copies non-archive export files (bookmarks HTML/JSON) into the dated
  * export directory on the labeled external drive, mirroring the external

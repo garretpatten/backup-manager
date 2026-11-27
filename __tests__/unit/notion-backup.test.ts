@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { NotionBackup, NotionBackupConfig } from '../../src/notion-backup.js';
 import { resetExternalDriveMountCache } from '../../src/export-dir.js';
 import { BackupContext } from '../../src/types.js';
@@ -122,6 +123,33 @@ describe('NotionBackup', () => {
     expect(logger.messages.some((m) => m.message.includes('Pages exported: 1'))).toBe(true);
     expect(logger.messages.some((m) => m.message.includes('Databases exported: 1'))).toBe(true);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('verifies the produced zip and writes the archive manifest', async () => {
+    mockWorkspace();
+
+    await new NotionBackup(context).run(config);
+
+    expect(archive.verifyCalls).toEqual(['/home/user/Notion-Export_2024-06-15.zip']);
+    const digest = createHash('sha256').update('zip-content').digest('hex');
+    expect(fs.files.get('/home/user/Exports/Exports_2024-06-15/manifest.sha256')).toBe(
+      `${digest}  Notion-Export_2024-06-15.zip\n`,
+    );
+  });
+
+  it('fails loudly when archive verification reports a corrupted zip', async () => {
+    mockWorkspace();
+    archive.verifyFailures.add('/home/user/Notion-Export_2024-06-15.zip');
+
+    await expect(new NotionBackup(context).run(config)).rejects.toThrow(
+      'simulated corrupted archive: /home/user/Notion-Export_2024-06-15.zip',
+    );
+
+    // The corrupted archive is never stored and no manifest is written.
+    expect(
+      fs.files.get('/home/user/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip'),
+    ).toBeUndefined();
+    expect(fs.files.has('/home/user/Exports/Exports_2024-06-15/manifest.sha256')).toBe(false);
   });
 
   it('sets the exit code when a page export fails', async () => {

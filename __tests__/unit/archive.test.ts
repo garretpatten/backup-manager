@@ -82,4 +82,36 @@ describe('ZipArchive', () => {
       'zip failed: zip error: Nothing to do',
     );
   });
+
+  describe('verify', () => {
+    it('runs zip -T against the archive path', async () => {
+      await archive.verify(outputPath);
+
+      expect(runner.commands).toEqual([
+        { command: 'zip', args: ['-T', outputPath], options: undefined },
+      ]);
+    });
+
+    it('passes when zip -T accepts the archive', async () => {
+      runner.setResponse('zip', ['-T', outputPath], {
+        stdout: `test of ${outputFileName} OK`,
+        stderr: '',
+        exitCode: 0,
+      });
+
+      await expect(archive.verify(outputPath)).resolves.toBeUndefined();
+    });
+
+    it('throws when zip -T reports a corrupted archive', async () => {
+      runner.setResponse('zip', ['-T', outputPath], {
+        stdout: '',
+        stderr: 'zip error: central directory entry corrupt',
+        exitCode: 2,
+      });
+
+      await expect(archive.verify(outputPath)).rejects.toThrow(
+        `zip -T failed for ${outputPath}: zip error: central directory entry corrupt`,
+      );
+    });
+  });
 });

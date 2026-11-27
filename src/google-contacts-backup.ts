@@ -1,7 +1,7 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
 import { saveEnvValue } from './env.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import {
   GoogleAuth,
@@ -112,6 +112,7 @@ export class GoogleContactsBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     logger.success('Google Contacts export completed!');
     for (const collection of collections) {
@@ -202,7 +203,9 @@ export class GoogleContactsBackup {
     logger.info('Creating Google Contacts export zip...');
     const outputFileName = `${exportDirName}.zip`;
     await this.context.archive.zipDirectory(exportDirName, outputFileName, cwd);
-    logger.success(`Export created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Export created successfully: ${zipPath}`);
   }
 }
 
