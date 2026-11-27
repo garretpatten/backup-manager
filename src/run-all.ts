@@ -2,7 +2,16 @@ import { createBackupContext, resolveModuleRoot, resolveProjectRoot } from './ba
 import { BackupConfigError, ResolvedBackupsConfig, loadBackupsConfig } from './backup-config.js';
 import { BackupStepDescriptor, orchestratedSteps } from './backup-steps.js';
 import { FileLogger } from './logger.js';
-import { BackupContext, Logger } from './types.js';
+import {
+  LAST_RUN_STATE_FILE,
+  LastRunState,
+  readLastRunState,
+  StepRunStatus,
+  STEP_STATUS_LABELS,
+  writeLastRunState,
+} from './run-state.js';
+import { RunLock } from './run-lock.js';
+import { BackupContext, FileSystem, Logger } from './types.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { formatRunTimestamp } from './utils.js';
@@ -13,14 +22,19 @@ interface RunAllConfig {
   projectRoot: string;
   /** Module root holding the committed fallback backups.json. */
   moduleRoot: string;
+  /**
+   * Preview the plan without executing anything, writing logs or state,
+   * or taking the run lock. A config error still fails loudly — that is
+   * the preflight's job.
+   */
+  dryRun?: boolean;
 }
 
-/** Per-step outcome: ran and succeeded, ran and failed, or why it never ran. */
-type RunStatus = 'ok' | 'failed' | 'skipped-disabled' | 'skipped-no-credentials';
+/** What the preflight predicts for one step: it will run, or why not. */
+type PlanStatus = 'run' | 'skipped-disabled' | 'skipped-no-credentials';
 
-const STATUS_LABELS: Record<RunStatus, string> = {
-  ok: 'OK',
-  failed: 'FAILED',
+const PLAN_STATUS_LABELS: Record<PlanStatus, string> = {
+  run: 'WOULD RUN',
   'skipped-disabled': 'SKIPPED (disabled)',
   'skipped-no-credentials': 'SKIPPED (no credentials)',
 };
@@ -36,54 +50,92 @@ interface StepPlanEntry {
  * supplies each step's credentials and config assembly. Execution stays
  * sequential, deliberately: the shared FileLogger is not concurrency-safe,
  * Notion is rate-limit throttled, and the external-drive mount cache is
- * per-process.
+ * per-process. A run lock additionally refuses overlapping orchestrated
+ * runs, and every run leaves a machine-readable record behind for
+ * `npm run status`.
  */
 export class BackupOrchestrator {
   constructor(
     private readonly context: BackupContext,
     private readonly registry: readonly BackupStepDescriptor[] = orchestratedSteps,
+    private readonly createLock: (fs: FileSystem, lockDir: string) => RunLock = (fs, lockDir) =>
+      new RunLock(fs, lockDir),
   ) {}
 
   async run(config: RunAllConfig): Promise<void> {
     // Load and validate before touching anything else: a broken backups.json
-    // must fail loudly without starting a partial run.
+    // must fail loudly without starting a partial run, and without taking
+    // the run lock or writing any state.
     const backups = await loadBackupsConfig(this.context.fs, config.projectRoot, config.moduleRoot);
     const plan = this.buildPlan(backups);
 
+    if (config.dryRun) {
+      this.preview(plan);
+      return;
+    }
+
+    const statePath = path.join(config.logDir, LAST_RUN_STATE_FILE);
     const date = this.context.dateProvider.now();
     const runTs = formatRunTimestamp(date);
     const logFile = path.join(config.logDir, `backups-${runTs}.log`);
 
-    await this.context.fs.mkdir(config.logDir, { recursive: true });
+    // One orchestrated run at a time: overlapping cron and manual invocations
+    // would race on the same dated export directory and log files.
+    const lock = this.createLock(this.context.fs, config.logDir);
+    await lock.acquire(this.context.logger);
 
-    const logger = new FileLogger(this.context.logger, this.context.fs, logFile);
+    try {
+      await this.context.fs.mkdir(config.logDir, { recursive: true });
 
-    logger.info('Starting all backups');
-    logger.info(`Log: ${logFile}`);
+      const logger = new FileLogger(this.context.logger, this.context.fs, logFile);
 
-    const results: Array<{ name: string; status: RunStatus }> = [];
+      logger.info('Starting all backups');
+      logger.info(`Log: ${logFile}`);
 
-    // Post steps run after every backup step, even when some of them failed.
-    const backupPlan = plan.filter((entry) => (entry.step.kind ?? 'backup') === 'backup');
-    const postPlan = plan.filter((entry) => entry.step.kind === 'post');
-    for (const entry of backupPlan) {
-      results.push({ name: entry.step.name, status: await this.runStep(entry, logger) });
-    }
-    for (const entry of postPlan) {
-      results.push({ name: entry.step.name, status: await this.runStep(entry, logger) });
-    }
+      const results: Array<{ name: string; status: StepRunStatus }> = [];
 
-    logger.info('Backup summary:');
-    const columnWidth = Math.max(...results.map((result) => result.name.length), 0) + 1;
-    for (const { name, status } of results) {
-      logger.info(`  ${name.padEnd(columnWidth)}: ${STATUS_LABELS[status]}`);
-    }
+      // Post steps run after every backup step, even when some of them failed.
+      const backupPlan = plan.filter((entry) => (entry.step.kind ?? 'backup') === 'backup');
+      const postPlan = plan.filter((entry) => entry.step.kind === 'post');
+      for (const entry of backupPlan) {
+        results.push({ name: entry.step.name, status: await this.runStep(entry, logger) });
+      }
+      for (const entry of postPlan) {
+        results.push({ name: entry.step.name, status: await this.runStep(entry, logger) });
+      }
 
-    if (results.some((result) => result.status === 'failed')) {
-      logger.warn(`One or more backups failed. See: ${logFile}`);
-      process.exitCode = 1;
-    } else {
-      logger.success('All backups completed successfully');
+      logger.info('Backup summary:');
+      const columnWidth = Math.max(...results.map((result) => result.name.length), 0) + 1;
+      for (const { name, status } of results) {
+        logger.info(`  ${name.padEnd(columnWidth)}: ${STEP_STATUS_LABELS[status]}`);
+      }
+
+      const outcome: 'ok' | 'failed' = results.some((result) => result.status === 'failed')
+        ? 'failed'
+        : 'ok';
+      if (outcome === 'failed') {
+        logger.warn(`One or more backups failed. See: ${logFile}`);
+        process.exitCode = 1;
+      } else {
+        logger.success('All backups completed successfully');
+      }
+
+      // Machine-readable record of this run for `npm run status`. A
+      // previous state file that cannot be read never blocks the backups
+      // themselves; last-success tracking simply resets.
+      const previous = await readLastRunState(this.context.fs, statePath).catch(() => null);
+      const finishedAt = this.context.dateProvider.now();
+      const state: LastRunState = {
+        version: 1,
+        finishedAt: finishedAt.toISOString(),
+        outcome,
+        steps: results,
+        lastSuccessAt:
+          outcome === 'ok' ? finishedAt.toISOString() : (previous?.lastSuccessAt ?? null),
+      };
+      await writeLastRunState(this.context.fs, statePath, state);
+    } finally {
+      await lock.release();
     }
   }
 
@@ -124,7 +176,42 @@ export class BackupOrchestrator {
     }));
   }
 
-  private async runStep(entry: StepPlanEntry, logger: Logger): Promise<RunStatus> {
+  /**
+   * Prints what each step would do — run, or why it would be skipped —
+   * without executing anything. The two skip reasons are the same signals
+   * the run summary reports; a config error never reaches this method and
+   * instead fails the preflight loudly.
+   */
+  private preview(plan: StepPlanEntry[]): void {
+    const logger = this.context.logger;
+    logger.info('Dry run: previewing the orchestrated plan without executing anything');
+
+    const backupPlan = plan.filter((entry) => (entry.step.kind ?? 'backup') === 'backup');
+    const postPlan = plan.filter((entry) => entry.step.kind === 'post');
+    const entries = [...backupPlan, ...postPlan];
+
+    const columnWidth = Math.max(...entries.map((entry) => entry.step.name.length), 0) + 1;
+    let wouldRun = 0;
+    for (const entry of entries) {
+      const status = this.planStatus(entry);
+      if (status === 'run') {
+        wouldRun++;
+      }
+      logger.info(`  ${entry.step.name.padEnd(columnWidth)}: ${PLAN_STATUS_LABELS[status]}`);
+    }
+    const skipped = entries.length - wouldRun;
+    logger.info(`Dry run complete: ${wouldRun} would run, ${skipped} would be skipped`);
+  }
+
+  private planStatus(entry: StepPlanEntry): PlanStatus {
+    if (!entry.enabled) {
+      return 'skipped-disabled';
+    }
+    const missing = (entry.step.requiredCredentials ?? []).filter((key) => !this.context.env[key]);
+    return missing.length > 0 ? 'skipped-no-credentials' : 'run';
+  }
+
+  private async runStep(entry: StepPlanEntry, logger: Logger): Promise<StepRunStatus> {
     const { step, enabled } = entry;
 
     // Intentional: the step never runs and its credentials are never checked.
@@ -157,6 +244,7 @@ async function main(): Promise<void> {
     logDir: path.join(resolveModuleRoot(), 'logs'),
     projectRoot: resolveProjectRoot(),
     moduleRoot: resolveModuleRoot(),
+    dryRun: process.argv.includes('--dry-run'),
   };
 
   await new BackupOrchestrator(context).run(config);

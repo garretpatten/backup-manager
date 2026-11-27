@@ -96,6 +96,10 @@ logs land in the submodule's `logs/` directory, exactly as before the extraction
   - `todoist-backup.ts` — Todoist tasks/projects/labels export (deprecated)
   - `run-all.ts` — Config-driven orchestrator running the steps listed in
     `backups.json`
+  - `status.ts` — Last-run status report for `npm run status`
+  - `run-state.ts` — Last-run state file (`logs/backups-last-run.json`)
+    read/write and staleness thresholds
+  - `run-lock.ts` — Orchestrated-run lockfile with stale-lock detection
   - `backup-config.ts` — `backups.json` resolution, parsing, and validation
   - `backup-steps.ts` — Registry of orchestrated step descriptors (name,
     required credentials, kind, config assembly)
@@ -441,6 +445,17 @@ EXTERNAL_DRIVE_LABEL=""
 # Optional: subpath on the external drive for dated Exports_* directories
 # (default: Exports); ignored when EXTERNAL_DRIVE_LABEL is unset
 EXTERNAL_DRIVE_EXPORT_SUBPATH=""
+```
+
+### Orchestrator
+
+Used by `npm run status`, which reports the last orchestrated run and warns
+when backups may have stopped running:
+
+```bash
+# Optional: hours after which the last fully successful run is considered
+# stale (default: 26 — one daily cron pass with slack)
+BACKUP_STALENESS_HOURS="26"
 ```
 
 ---
@@ -1094,6 +1109,31 @@ reports the status of every step in a summary: `OK`, `FAILED`,
 when any executed step fails. The `code-gitlab` step includes the automatic
 mirror cleanup.
 
+### Orchestrator operability
+
+- **Dry-run preflight**: `./run-all.sh --dry-run` (or
+  `npm run backup:all -- --dry-run`) lists every step as the run would
+  handle it — `WOULD RUN`, `SKIPPED (disabled)`, or `SKIPPED (no
+credentials)` — without executing anything, writing logs or state, or
+  taking the run lock. A broken `backups.json` fails the preflight loudly
+  before anything is listed, which is exactly what cron scheduling wants
+  to know in advance.
+- **Last-run state**: every orchestrated run writes
+  `logs/backups-last-run.json` — the finish timestamp, the overall
+  outcome, each step's status, and the timestamp of the last fully
+  successful run (carried forward across failing runs).
+- **Status**: `npm run status` prints the last run's timestamp, per-step
+  outcome, and a staleness warning when the last fully successful run is
+  older than `BACKUP_STALENESS_HOURS` (default 26). It exits non-zero
+  when no run has been recorded, the last run failed, or backups are
+  stale, so it doubles as a cron watchdog — a laptop that sleeps through
+  its backup window surfaces as a stale warning instead of silence.
+- **Locking**: a running orchestrated pass holds `logs/backups.lock`, and
+  a second concurrent run refuses to start with a clear message. A lock
+  left behind by a crashed run is detected (dead pid, or older than 24
+  hours) and recovered automatically, so a crash cannot block future
+  runs.
+
 ### backups.json
 
 The committed `backups.json` at the repository root is the single
@@ -1246,6 +1286,9 @@ All scripts create detailed logs in `logs/`:
 **Orchestrator:**
 
 - `backups-YYYYMMDD-HHMMSS.log`
+- `backups-last-run.json` — machine-readable record of the last orchestrated
+  run, read by `npm run status`
+- `backups.lock` — run lock held only while an orchestrated run is executing
 
 Logs include:
 

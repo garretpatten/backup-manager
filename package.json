@@ -20,6 +20,7 @@
     "backup:todoist": "tsx src/todoist-backup.ts",
     "backup:all": "tsx src/run-all.ts",
     "backups": "tsx src/run-all.ts",
+    "status": "tsx src/status.ts",
     "lint": "npm run lint:prettier && npm run lint:markdown && npm run lint:yaml",
     "lint:prettier": "prettier --check .",
     "lint:markdown": "markdownlint-cli2 \"**/*.md\" \"#node_modules\"",

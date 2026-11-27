@@ -3,6 +3,8 @@ import { BackupConfigError, loadBackupsConfig } from '../../src/backup-config.js
 import { BackupStepDescriptor, BackupStepKind, orchestratedSteps } from '../../src/backup-steps.js';
 import { RealFileSystem } from '../../src/fs.js';
 import { resolveModuleRoot } from '../../src/backup-context.js';
+import { RunLock, RunLockOptions } from '../../src/run-lock.js';
+import { LAST_RUN_STATE_FILE } from '../../src/run-state.js';
 import { BackupContext } from '../../src/types.js';
 import {
   MockArchive,
@@ -312,6 +314,253 @@ describe('BackupOrchestrator', () => {
 
       expect(calls).toEqual(['alpha']);
       expect(summaryLines(logger)).toContain('  post-step : SKIPPED (disabled)');
+    });
+  });
+
+  describe('dry-run preflight', () => {
+    const noRunArtifacts = (): void => {
+      expect(fs.files.has('/logs/backups-last-run.json')).toBe(false);
+      expect(fs.files.has('/logs/backups.lock')).toBe(false);
+      expect([...fs.files.keys()].some((key) => key.startsWith('/logs/'))).toBe(false);
+      expect(fs.directories.has('/logs')).toBe(false);
+    };
+
+    it('previews run and skip reasons without executing anything', async () => {
+      const calls: string[] = [];
+      const registry = [
+        stubStep('alpha', { calls }),
+        stubStep('beta', { requiredCredentials: ['BETA_TOKEN'], calls }),
+        stubStep('gamma', { calls }),
+      ];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+          { name: 'gamma', enabled: false },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run({
+        ...runConfig,
+        dryRun: true,
+      });
+
+      expect(calls).toEqual([]);
+      expect(logger.messages.some((m) => m.message.includes('without executing anything'))).toBe(
+        true,
+      );
+      expect(
+        logger.messages.some((m) => m.message.includes('alpha') && m.message.includes('WOULD RUN')),
+      ).toBe(true);
+      expect(
+        logger.messages.some(
+          (m) => m.message.includes('beta') && m.message.includes('SKIPPED (no credentials)'),
+        ),
+      ).toBe(true);
+      expect(
+        logger.messages.some(
+          (m) => m.message.includes('gamma') && m.message.includes('SKIPPED (disabled)'),
+        ),
+      ).toBe(true);
+      expect(
+        logger.messages.some((m) => m.message.includes('1 would run, 2 would be skipped')),
+      ).toBe(true);
+      noRunArtifacts();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('fails the preflight loudly on a config error, without side effects', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'typo-step', enabled: true },
+        ]),
+      );
+
+      await expect(
+        new BackupOrchestrator(makeContext(env, fs, logger), registry).run({
+          ...runConfig,
+          dryRun: true,
+        }),
+      ).rejects.toThrow(/Unknown step "typo-step"/);
+
+      expect(calls).toEqual([]);
+      noRunArtifacts();
+    });
+  });
+
+  describe('last-run state', () => {
+    const statePath = `/logs/${LAST_RUN_STATE_FILE}`;
+
+    it('writes per-step status and a failed outcome after a run', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls }), stubStep('beta', { outcome: 'fail', calls })];
+      await fs.writeFile(
+        '/project/backups.json',
+        configJson([
+          { name: 'alpha', enabled: true },
+          { name: 'beta', enabled: true },
+        ]),
+      );
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      const state = JSON.parse(fs.files.get(statePath) ?? '{}');
+      expect(state.version).toBe(1);
+      expect(state.finishedAt).toBe('2024-06-15T08:30:45.000Z');
+      expect(state.outcome).toBe('failed');
+      expect(state.steps).toEqual([
+        { name: 'alpha', status: 'ok' },
+        { name: 'beta', status: 'failed' },
+      ]);
+      expect(state.lastSuccessAt).toBeNull();
+    });
+
+    it('records lastSuccessAt for a fully successful run', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      const state = JSON.parse(fs.files.get(statePath) ?? '{}');
+      expect(state.outcome).toBe('ok');
+      expect(state.lastSuccessAt).toBe('2024-06-15T08:30:45.000Z');
+    });
+
+    it('carries the previous lastSuccessAt across a failing run', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { outcome: 'fail', calls })];
+      await fs.writeFile(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          finishedAt: '2024-06-01T00:00:00.000Z',
+          outcome: 'ok',
+          steps: [{ name: 'alpha', status: 'ok' }],
+          lastSuccessAt: '2024-06-01T00:00:00.000Z',
+        }),
+      );
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      const state = JSON.parse(fs.files.get(statePath) ?? '{}');
+      expect(state.outcome).toBe('failed');
+      expect(state.lastSuccessAt).toBe('2024-06-01T00:00:00.000Z');
+    });
+
+    it('tolerates an unreadable previous state file', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { outcome: 'fail', calls })];
+      await fs.writeFile(statePath, '{ not json');
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await new BackupOrchestrator(makeContext(env, fs, logger), registry).run(runConfig);
+
+      const state = JSON.parse(fs.files.get(statePath) ?? '{}');
+      expect(state.outcome).toBe('failed');
+      expect(state.lastSuccessAt).toBeNull();
+    });
+  });
+
+  describe('run lock', () => {
+    const lockPath = '/logs/backups.lock';
+
+    function makeOrchestratorWithLock(
+      registry: readonly BackupStepDescriptor[],
+      lockOptions: RunLockOptions,
+    ): BackupOrchestrator {
+      return new BackupOrchestrator(
+        makeContext(env, fs, logger),
+        registry,
+        (fsArg, lockDir) =>
+          new RunLock(fsArg, lockDir, {
+            pid: 4242,
+            isProcessAlive: () => false,
+            maxLockAgeMs: 24 * 60 * 60 * 1_000,
+            now: () => new Date('2024-06-15T08:30:45Z'),
+            ...lockOptions,
+          }),
+      );
+    }
+
+    it('holds the lock while steps run and releases it afterwards', async () => {
+      const calls: string[] = [];
+      const lockSeenDuringRun: boolean[] = [];
+      const registry: BackupStepDescriptor[] = [
+        {
+          name: 'alpha',
+          run: async () => {
+            calls.push('alpha');
+            lockSeenDuringRun.push(await fs.exists(lockPath));
+          },
+        },
+      ];
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await makeOrchestratorWithLock(registry, {}).run(runConfig);
+
+      expect(calls).toEqual(['alpha']);
+      expect(lockSeenDuringRun).toEqual([true]);
+      expect(fs.files.has(lockPath)).toBe(false);
+    });
+
+    it('refuses to start when a live run holds the lock', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      const liveLock = JSON.stringify({ pid: 999, startedAt: '2024-06-15T08:30:45.000Z' });
+      await fs.writeFile(lockPath, liveLock);
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await expect(
+        makeOrchestratorWithLock(registry, { isProcessAlive: (pid) => pid === 999 }).run(runConfig),
+      ).rejects.toThrow(/Another orchestrated backup run appears to be active \(pid 999/);
+
+      expect(calls).toEqual([]);
+      // The live run's lock is left untouched, and nothing was recorded.
+      expect(fs.files.get(lockPath)).toBe(liveLock);
+      expect(fs.files.has('/logs/backups-last-run.json')).toBe(false);
+    });
+
+    it('recovers a stale lock from a crashed run and proceeds', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile(
+        lockPath,
+        JSON.stringify({ pid: 999, startedAt: '2024-06-15T08:30:45.000Z' }),
+      );
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      // The default injected liveness reports pid 999 dead, so the lock is stale.
+      await makeOrchestratorWithLock(registry, {}).run(runConfig);
+
+      expect(calls).toEqual(['alpha']);
+      expect(fs.files.has(lockPath)).toBe(false);
+      expect(
+        logger.messages.some(
+          (m) => m.level === 'WARN' && m.message.includes('Removing stale run lock'),
+        ),
+      ).toBe(true);
+    });
+
+    it('recovers a lock older than the maximum age even when its pid is alive', async () => {
+      const calls: string[] = [];
+      const registry = [stubStep('alpha', { calls })];
+      await fs.writeFile(
+        lockPath,
+        JSON.stringify({ pid: 999, startedAt: '2024-06-14T06:30:45.000Z' }),
+      );
+      await fs.writeFile('/project/backups.json', configJson([{ name: 'alpha', enabled: true }]));
+
+      await makeOrchestratorWithLock(registry, { isProcessAlive: () => true }).run(runConfig);
+
+      expect(calls).toEqual(['alpha']);
+      expect(fs.files.has(lockPath)).toBe(false);
     });
   });
 
