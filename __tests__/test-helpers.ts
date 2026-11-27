@@ -208,7 +208,11 @@ export class MockHttpClient implements HttpClient {
 export class MockCommandRunner implements CommandRunner {
   responses: Map<string, CommandResult> = new Map();
   effects: Map<string, () => void> = new Map();
-  commands: Array<{ command: string; args: string[]; options?: { cwd?: string } }> = [];
+  commands: Array<{
+    command: string;
+    args: string[];
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv };
+  }> = [];
 
   key(command: string, args: string[]): string {
     return `${command} ${args.join(' ')}`;

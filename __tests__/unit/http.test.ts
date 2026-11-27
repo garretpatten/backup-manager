@@ -1,5 +1,7 @@
 import { HttpAttempt, NodeHttpClient } from '../../src/http.js';
 import { HttpResponse } from '../../src/types.js';
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
+import { AddressInfo, Socket } from 'node:net';
 
 interface ScriptedCall {
   method: string;
@@ -238,6 +240,114 @@ describe('NodeHttpClient', () => {
         expect(call.body).toBe('{"page":2}');
         expect(call.headers).toEqual({ Authorization: 'Bearer token' });
       }
+    });
+  });
+
+  // Exercises sendOnce against a real loopback server: everything offline
+  // (127.0.0.1, no credentials), but through actual sockets instead of the
+  // scripted attempt seam.
+  describe('real transport over a loopback server', () => {
+    let server: Server;
+    let baseUrl: string;
+    let handler: (req: IncomingMessage, res: ServerResponse) => void;
+    const sockets = new Set<Socket>();
+
+    beforeAll(async () => {
+      server = createServer((req, res) => handler(req, res));
+      server.on('connection', (socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address() as AddressInfo;
+      baseUrl = `http://127.0.0.1:${address.port}`;
+    });
+
+    afterAll(async () => {
+      // A stalling handler leaves sockets open; destroy them so the run ends.
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    });
+
+    afterEach(() => {
+      handler = () => {};
+    });
+
+    it('performs a real GET and folds multi-value response headers', async () => {
+      handler = (_req, res) => {
+        res.setHeader('x-multi', ['a', 'b']);
+        res.end('{"ok":true}');
+      };
+
+      const result = await new NodeHttpClient().get(`${baseUrl}/data`);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.body).toBe('{"ok":true}');
+      expect(result.headers?.['x-multi']).toBe('a, b');
+    });
+
+    it('sends the request body with a computed Content-Length', async () => {
+      let seenBody = '';
+      let seenLength = '';
+      handler = (req, res) => {
+        seenLength = String(req.headers['content-length']);
+        req.on('data', (chunk: Buffer) => {
+          seenBody += chunk.toString('utf8');
+        });
+        req.on('end', () => res.end('stored'));
+      };
+
+      const result = await new NodeHttpClient().post(`${baseUrl}/items`, '{"page":2}');
+
+      expect(result.statusCode).toBe(200);
+      expect(seenBody).toBe('{"page":2}');
+      expect(seenLength).toBe('10');
+    });
+
+    it('sets the default User-Agent and Accept headers', async () => {
+      let seenUserAgent = '';
+      let seenAccept = '';
+      handler = (req, res) => {
+        seenUserAgent = String(req.headers['user-agent']);
+        seenAccept = String(req.headers.accept);
+        res.end('ok');
+      };
+
+      await new NodeHttpClient().get(`${baseUrl}/data`);
+
+      expect(seenUserAgent).toBe('system-scripts-backup/1.0');
+      expect(seenAccept).toBe('application/json');
+    });
+
+    it('rejects when the response stalls past the idle timeout', async () => {
+      handler = () => {
+        // Never respond: the socket goes idle until the client gives up.
+      };
+
+      await expect(new NodeHttpClient(100).get(`${baseUrl}/stall`)).rejects.toThrow(
+        'timed out after 100ms',
+      );
+    });
+
+    it('retries through real sockets when the server resets the connection', async () => {
+      let firstAttempt = true;
+      handler = (_req, res) => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          res.socket?.destroy();
+          return;
+        }
+        res.end('recovered');
+      };
+
+      const result = await new NodeHttpClient(1_000, { initialDelayMs: 1 }).get(`${baseUrl}/flaky`);
+
+      expect(result.statusCode).toBe(200);
+      expect(result.body).toBe('recovered');
     });
   });
 });

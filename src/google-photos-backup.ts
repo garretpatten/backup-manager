@@ -6,6 +6,7 @@ import { BackupContext, Logger } from './types.js';
 import { formatBackupDate, formatRunTimestamp } from './utils.js';
 import { MediaFs, RealMediaFs } from './google-photos-media-fs.js';
 import {
+  defaultSleep,
   DownloadTransport,
   NodeDownloadTransport,
   TakeoutDownloader,
@@ -31,6 +32,11 @@ export class GooglePhotosBackup {
     private readonly context: BackupContext,
     private readonly mediaFs: MediaFs,
     private readonly transport?: DownloadTransport,
+    /**
+     * Sleep seam so tests can run the retry loop without waiting; retry
+     * backoff between slice attempts is otherwise real seconds.
+     */
+    private readonly sleep: (ms: number) => Promise<void> = defaultSleep,
   ) {}
 
   async run(config: GooglePhotosBackupConfig): Promise<void> {
@@ -67,6 +73,7 @@ export class GooglePhotosBackup {
         this.transport ?? new NodeDownloadTransport(),
         this.mediaFs,
         logger,
+        this.sleep,
       );
       const summary = await downloader.downloadAll(config.urls, config.slicesDir);
       failedSlices = summary.failed;

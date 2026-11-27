@@ -1,4 +1,9 @@
-import { NotionExporter, formatRichText, richTextToMarkdown } from '../../src/notion-exporter.js';
+import {
+  NotionExporter,
+  formatRichText,
+  getPropertyValue,
+  richTextToMarkdown,
+} from '../../src/notion-exporter.js';
 import { NotionClient } from '../../src/notion.js';
 import { MockFileSystem, MockLogger } from '../test-helpers.js';
 
@@ -211,5 +216,229 @@ describe('formatRichText', () => {
       href: null,
     };
     expect(formatRichText(text)).toBe('***text***');
+  });
+});
+
+describe('getPropertyValue', () => {
+  interface Case {
+    name: string;
+    property: unknown;
+    expected: string;
+  }
+
+  // One row per Notion property type (and its edge cases): the export
+  // fidelity of database rows depends on this switch staying exhaustive.
+  const cases: Case[] = [
+    {
+      name: 'missing properties render empty',
+      property: null,
+      expected: '',
+    },
+    {
+      name: 'undefined properties render empty',
+      property: undefined,
+      expected: '',
+    },
+    {
+      name: 'title concatenates plain text',
+      property: { type: 'title', title: [{ plain_text: 'My' }, { plain_text: ' Page' }] },
+      expected: 'My Page',
+    },
+    {
+      name: 'rich_text concatenates plain text',
+      property: { type: 'rich_text', rich_text: [{ plain_text: 'plain' }] },
+      expected: 'plain',
+    },
+    {
+      name: 'number renders its value',
+      property: { type: 'number', number: 42 },
+      expected: '42',
+    },
+    {
+      name: 'a null number renders empty',
+      property: { type: 'number', number: null },
+      expected: '',
+    },
+    {
+      name: 'select renders its name',
+      property: { type: 'select', select: { name: 'In Progress' } },
+      expected: 'In Progress',
+    },
+    {
+      name: 'multi_select joins names with semicolons',
+      property: {
+        type: 'multi_select',
+        multi_select: [{ name: 'alpha' }, { name: 'beta' }],
+      },
+      expected: 'alpha; beta',
+    },
+    {
+      name: 'status renders its name',
+      property: { type: 'status', status: { name: 'Done' } },
+      expected: 'Done',
+    },
+    {
+      name: 'date renders its start',
+      property: { type: 'date', date: { start: '2026-01-01' } },
+      expected: '2026-01-01',
+    },
+    {
+      name: 'a date range renders start to end',
+      property: { type: 'date', date: { start: '2026-01-01', end: '2026-02-01' } },
+      expected: '2026-01-01 to 2026-02-01',
+    },
+    {
+      name: 'a missing date renders empty',
+      property: { type: 'date', date: null },
+      expected: '',
+    },
+    {
+      name: 'a string formula renders its string',
+      property: { type: 'formula', formula: { type: 'string', string: 'Result' } },
+      expected: 'Result',
+    },
+    {
+      name: 'a number formula renders its number',
+      property: { type: 'formula', formula: { type: 'number', number: 7 } },
+      expected: '7',
+    },
+    {
+      name: 'a boolean formula renders its boolean',
+      property: { type: 'formula', formula: { type: 'boolean', boolean: true } },
+      expected: 'true',
+    },
+    {
+      name: 'a false boolean formula renders false',
+      property: { type: 'formula', formula: { type: 'boolean', boolean: false } },
+      expected: 'false',
+    },
+    {
+      name: 'a date formula renders the date start',
+      property: { type: 'formula', formula: { type: 'date', date: { start: '2026-03-01' } } },
+      expected: '2026-03-01',
+    },
+    {
+      name: 'an unknown formula result renders empty',
+      property: { type: 'formula', formula: { type: 'unsupported' } },
+      expected: '',
+    },
+    {
+      name: 'relation joins ids with semicolons',
+      property: { type: 'relation', relation: [{ id: 'id-1' }, { id: 'id-2' }] },
+      expected: 'id-1; id-2',
+    },
+    {
+      name: 'rollup renders its nested properties',
+      property: {
+        type: 'rollup',
+        rollup: {
+          type: 'array',
+          array: [
+            { type: 'rich_text', rich_text: [{ plain_text: 'x' }] },
+            { type: 'number', number: 3 },
+          ],
+        },
+      },
+      expected: 'x; 3',
+    },
+    {
+      name: 'an empty rollup renders empty',
+      property: { type: 'rollup', rollup: { type: 'array', array: [] } },
+      expected: '',
+    },
+    {
+      name: 'a rollup without an array renders empty',
+      property: { type: 'rollup', rollup: { type: 'number', number: 1 } },
+      expected: '',
+    },
+    {
+      name: 'people join names with semicolons',
+      property: { type: 'people', people: [{ name: 'Ada' }, { name: 'Grace' }] },
+      expected: 'Ada; Grace',
+    },
+    {
+      name: 'people without a name fall back to their id',
+      property: { type: 'people', people: [{ id: 'person-1' }] },
+      expected: 'person-1',
+    },
+    {
+      name: 'files render their names',
+      property: { type: 'files', files: [{ name: 'report.pdf' }] },
+      expected: 'report.pdf',
+    },
+    {
+      name: 'hosted files fall back to their url',
+      property: { type: 'files', files: [{ file: { url: 'https://file.example' } }] },
+      expected: 'https://file.example',
+    },
+    {
+      name: 'external files fall back to their url',
+      property: { type: 'files', files: [{ external: { url: 'https://external.example' } }] },
+      expected: 'https://external.example',
+    },
+    {
+      name: 'checkbox renders true',
+      property: { type: 'checkbox', checkbox: true },
+      expected: 'true',
+    },
+    {
+      name: 'checkbox renders false',
+      property: { type: 'checkbox', checkbox: false },
+      expected: 'false',
+    },
+    {
+      name: 'a missing checkbox renders false',
+      property: { type: 'checkbox' },
+      expected: 'false',
+    },
+    {
+      name: 'url renders its value',
+      property: { type: 'url', url: 'https://example.com' },
+      expected: 'https://example.com',
+    },
+    {
+      name: 'email renders its value',
+      property: { type: 'email', email: 'me@example.com' },
+      expected: 'me@example.com',
+    },
+    {
+      name: 'phone_number renders its value',
+      property: { type: 'phone_number', phone_number: '+1 555 0100' },
+      expected: '+1 555 0100',
+    },
+    {
+      name: 'created_by renders the user name',
+      property: { type: 'created_by', created_by: { name: 'Ada', id: 'user-1' } },
+      expected: 'Ada',
+    },
+    {
+      name: 'created_by without a name falls back to the id',
+      property: { type: 'created_by', created_by: { id: 'user-1' } },
+      expected: 'user-1',
+    },
+    {
+      name: 'created_time renders its value',
+      property: { type: 'created_time', created_time: '2026-01-01T00:00:00Z' },
+      expected: '2026-01-01T00:00:00Z',
+    },
+    {
+      name: 'last_edited_by without a name falls back to the id',
+      property: { type: 'last_edited_by', last_edited_by: { id: 'user-2' } },
+      expected: 'user-2',
+    },
+    {
+      name: 'last_edited_time renders its value',
+      property: { type: 'last_edited_time', last_edited_time: '2026-01-02T00:00:00Z' },
+      expected: '2026-01-02T00:00:00Z',
+    },
+    {
+      name: 'an unknown property type falls back to JSON',
+      property: { type: 'shorthand', shorthand: {} },
+      expected: '{"type":"shorthand","shorthand":{}}',
+    },
+  ];
+
+  it.each(cases)('$name', ({ property, expected }) => {
+    expect(getPropertyValue(property)).toBe(expected);
   });
 });
