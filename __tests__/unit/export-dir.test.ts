@@ -1,5 +1,6 @@
 import {
-  copyZipToExternalDrive,
+  copyExportFilesToExternalDrive,
+  copyFileToExternalDrive,
   DEFAULT_DRIVE_EXPORTS_SUBPATH,
   formatExportDirName,
   moveZipToExportDir,
@@ -197,7 +198,7 @@ describe('export-dir helpers', () => {
     });
   });
 
-  describe('copyZipToExternalDrive', () => {
+  describe('copyFileToExternalDrive', () => {
     let fs: MockFileSystem;
     let logger: MockLogger;
 
@@ -206,13 +207,13 @@ describe('export-dir helpers', () => {
       logger = new MockLogger();
     });
 
-    it('copies the zip into the destination dir', async () => {
+    it('copies the file into the destination dir', async () => {
       fs.files.set(
         '/home/user/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
         'zip-content',
       );
 
-      const ok = await copyZipToExternalDrive(
+      const ok = await copyFileToExternalDrive(
         fs,
         logger,
         '/home/user/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
@@ -228,7 +229,7 @@ describe('export-dir helpers', () => {
     });
 
     it('warns and returns false when the copy fails', async () => {
-      const ok = await copyZipToExternalDrive(
+      const ok = await copyFileToExternalDrive(
         fs,
         logger,
         '/home/user/Exports/Exports_2024-06-15/missing.zip',
@@ -236,6 +237,105 @@ describe('export-dir helpers', () => {
       );
 
       expect(ok).toBe(false);
+      expect(logger.messages.some((m) => m.level === 'WARN')).toBe(true);
+    });
+  });
+
+  describe('copyExportFilesToExternalDrive', () => {
+    let fs: MockFileSystem;
+    let logger: MockLogger;
+
+    beforeEach(() => {
+      fs = new MockFileSystem();
+      logger = new MockLogger();
+      resetExternalDriveMountCache();
+    });
+
+    it('copies every export file into the drive export dir when a labeled drive is mounted', async () => {
+      fs.directories.add('/Volumes/Backup Drive');
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html', 'html');
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.json', 'json');
+
+      await copyExportFilesToExternalDrive(
+        fs,
+        { EXTERNAL_DRIVE_LABEL: 'Backup Drive' },
+        logger,
+        [
+          '/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+          '/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.json',
+        ],
+        date,
+      );
+
+      expect(
+        fs.files.get(
+          '/Volumes/Backup Drive/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+        ),
+      ).toBe('html');
+      expect(
+        fs.files.get(
+          '/Volumes/Backup Drive/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.json',
+        ),
+      ).toBe('json');
+    });
+
+    it('honors the drive subpath env override', async () => {
+      fs.directories.add('/Volumes/Backup Drive');
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html', 'html');
+
+      await copyExportFilesToExternalDrive(
+        fs,
+        {
+          EXTERNAL_DRIVE_LABEL: 'Backup Drive',
+          EXTERNAL_DRIVE_EXPORT_SUBPATH: 'Backup/Archives',
+        },
+        logger,
+        ['/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html'],
+        date,
+      );
+
+      expect(
+        fs.files.get(
+          '/Volumes/Backup Drive/Backup/Archives/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+        ),
+      ).toBe('html');
+    });
+
+    it('skips the external copy with an info log when no label is configured', async () => {
+      fs.directories.add('/Volumes/T7 Shield');
+
+      await copyExportFilesToExternalDrive(
+        fs,
+        {},
+        logger,
+        ['/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html'],
+        date,
+      );
+
+      expect(
+        fs.files.has(
+          '/Volumes/T7 Shield/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+        ),
+      ).toBe(false);
+      expect(
+        logger.messages.some(
+          (m) => m.level === 'INFO' && m.message.includes('EXTERNAL_DRIVE_LABEL'),
+        ),
+      ).toBe(true);
+      expect(logger.messages.some((m) => m.level === 'WARN')).toBe(false);
+    });
+
+    it('warns and skips the copy when the labeled drive is not mounted', async () => {
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html', 'html');
+
+      await copyExportFilesToExternalDrive(
+        fs,
+        { EXTERNAL_DRIVE_LABEL: 'Backup Drive' },
+        logger,
+        ['/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html'],
+        date,
+      );
+
       expect(logger.messages.some((m) => m.level === 'WARN')).toBe(true);
     });
   });

@@ -2,6 +2,7 @@ import {
   ChromeBookmarksBackup,
   ChromeBookmarksBackupConfig,
 } from '../../src/chrome-bookmarks-backup.js';
+import { resetExternalDriveMountCache } from '../../src/export-dir.js';
 import { BackupContext } from '../../src/types.js';
 import {
   MockArchive,
@@ -114,6 +115,8 @@ describe('ChromeBookmarksBackup', () => {
     };
 
     runner.setResponse('pgrep', ['-i', 'chrome'], { stdout: '', stderr: '', exitCode: 1 });
+
+    resetExternalDriveMountCache();
   });
 
   it('finds Linux bookmarks path, writes HTML and JSON copies', async () => {
@@ -134,9 +137,12 @@ describe('ChromeBookmarksBackup', () => {
         m.message.includes('Chrome bookmarks backup completed successfully'),
       ),
     ).toBe(true);
-    expect(fs.files.get('/home/user/chrome-bookmarks_2024-06-15.json')).toBe(sampleBookmarksJson());
+    expect(
+      fs.files.get('/home/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.json'),
+    ).toBe(sampleBookmarksJson());
 
-    const html = fs.files.get('/home/user/chrome-bookmarks_2024-06-15.html') ?? '';
+    const html =
+      fs.files.get('/home/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.html') ?? '';
     expect(html).toContain('<!DOCTYPE NETSCAPE-Bookmark-file-1>');
     expect(html).toContain('<TITLE>Bookmarks</TITLE>');
     expect(html).toContain('<H1>Bookmarks</H1>');
@@ -159,6 +165,9 @@ describe('ChromeBookmarksBackup', () => {
       '<DT><A HREF="https://mobile.example.com" ADD_DATE="1555526400" LAST_MODIFIED="1555526400">Mobile Link</A>',
     );
     expect(html).toContain('</DL><p>');
+
+    expect(fs.files.has('/home/user/chrome-bookmarks_2024-06-15.html')).toBe(false);
+    expect(fs.files.has('/home/user/chrome-bookmarks_2024-06-15.json')).toBe(false);
   });
 
   it('falls back to the macOS path when the Linux path does not exist', async () => {
@@ -174,7 +183,8 @@ describe('ChromeBookmarksBackup', () => {
 
     await new ChromeBookmarksBackup(context).run(config);
 
-    const html = fs.files.get('/Users/user/chrome-bookmarks_2024-06-15.html') ?? '';
+    const html =
+      fs.files.get('/Users/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.html') ?? '';
     expect(html).toContain('<!DOCTYPE NETSCAPE-Bookmark-file-1>');
     expect(logger.messages.some((m) => m.message.includes(macosBookmarks))).toBe(true);
   });
@@ -192,7 +202,8 @@ describe('ChromeBookmarksBackup', () => {
 
     await new ChromeBookmarksBackup(context).run(config);
 
-    const html = fs.files.get('/home/user/chrome-bookmarks_2024-06-15.html') ?? '';
+    const html =
+      fs.files.get('/home/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.html') ?? '';
     expect(html).toContain('<!DOCTYPE NETSCAPE-Bookmark-file-1>');
     expect(logger.messages.some((m) => m.message.includes(accountBookmarks))).toBe(true);
   });
@@ -237,8 +248,65 @@ describe('ChromeBookmarksBackup', () => {
 
     await new ChromeBookmarksBackup(context).run(config);
 
-    expect(fs.files.has('/home/user/chrome-bookmarks_2024-06-15.json')).toBe(false);
-    expect(fs.files.has('/home/user/chrome-bookmarks_2024-06-15.html')).toBe(true);
+    expect(
+      fs.files.has('/home/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.json'),
+    ).toBe(false);
+    expect(
+      fs.files.has('/home/user/Exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.html'),
+    ).toBe(true);
+  });
+
+  it('honors an EXPORTS_DIR override for the local export root', async () => {
+    const homeDir = '/home/user';
+    const linuxBookmarks = `${homeDir}/.config/google-chrome/Default/Bookmarks`;
+    fs.files.set(linuxBookmarks, sampleBookmarksJson());
+    fs.existsPaths.add(linuxBookmarks);
+
+    context.env = { EXPORTS_DIR: '/data/exports' };
+
+    const config: ChromeBookmarksBackupConfig = {
+      homeDir,
+      logDir: '/logs',
+    };
+
+    await new ChromeBookmarksBackup(context).run(config);
+
+    expect(fs.files.get('/data/exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.json')).toBe(
+      sampleBookmarksJson(),
+    );
+    expect(
+      fs.files
+        .get('/data/exports/Exports_2024-06-15/chrome-bookmarks_2024-06-15.html')
+        ?.includes('<!DOCTYPE NETSCAPE-Bookmark-file-1>'),
+    ).toBe(true);
+    expect(fs.files.has('/home/user/chrome-bookmarks_2024-06-15.html')).toBe(false);
+  });
+
+  it('copies the exports to the external drive when a labeled drive is mounted', async () => {
+    const homeDir = '/home/user';
+    const linuxBookmarks = `${homeDir}/.config/google-chrome/Default/Bookmarks`;
+    fs.files.set(linuxBookmarks, sampleBookmarksJson());
+    fs.existsPaths.add(linuxBookmarks);
+    fs.directories.add('/Volumes/Backup Drive');
+
+    context.env = { EXTERNAL_DRIVE_LABEL: 'Backup Drive' };
+
+    const config: ChromeBookmarksBackupConfig = {
+      homeDir,
+      logDir: '/logs',
+    };
+
+    await new ChromeBookmarksBackup(context).run(config);
+
+    const driveDir = '/Volumes/Backup Drive/Exports/Exports_2024-06-15';
+    expect(fs.files.get(`${driveDir}/chrome-bookmarks_2024-06-15.json`)).toBe(
+      sampleBookmarksJson(),
+    );
+    expect(
+      fs.files
+        .get(`${driveDir}/chrome-bookmarks_2024-06-15.html`)
+        ?.includes('<!DOCTYPE NETSCAPE-Bookmark-file-1>'),
+    ).toBe(true);
   });
 
   it('fails fast when no bookmarks file is found', async () => {

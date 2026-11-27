@@ -204,30 +204,32 @@ sudo yum install git curl zip
 
 ## Export Archives & External Drive Copy
 
-All zip-producing backups (`code`, `notion`, `obsidian-notes`,
-`google-calendar`, `google-tasks`, `google-contacts`, and — when enabled —
-the deprecated `spotify` and `todoist`) write their zips into a dated
-directory instead of directly into the home directory:
+All export-producing backups write their output files into a dated directory
+instead of directly into the home directory: the zip-producing backups
+(`code`, `notion`, `obsidian-notes`, `google-calendar`, `google-tasks`,
+`google-contacts`, and — when enabled — the deprecated `spotify` and
+`todoist`) write their zips, and the bookmarks backups write their HTML/JSON
+exports:
 
 - **Local**: `~/Exports/Exports_YYYY-MM-DD/` by default. Set `EXPORTS_DIR`
   (absolute or `~`-relative) to relocate the local export root.
 - **External drive**: set `EXTERNAL_DRIVE_LABEL` to the volume label of an
-  external drive (e.g. `T7 Shield`) and each zip is also copied to
+  external drive (e.g. `T7 Shield`) and each export file is also copied to
   `<mount>/<subpath>/Exports_YYYY-MM-DD/` (`/Volumes/<label>/...` on macOS,
   `/run/media/<user>/<label>/...` on Linux). The subpath defaults to
   `Exports`; set `EXTERNAL_DRIVE_EXPORT_SUBPATH` (e.g. `Backup/Archives`) to
   override it.
 
 When `EXTERNAL_DRIVE_LABEL` is unset, the external copy is skipped with an
-informational log and only the local archive is written. When the label is
-set, the drive is located by volume label at the usual mount points; the
+informational log and only the local export files are written. When the label
+is set, the drive is located by volume label at the usual mount points; the
 label directory must exist as a directory at one of those locations and is
 trusted as-is. The mount is probed once per process run and the result is
 reused by all backups in that run. If the drive is not attached, the local
-archive is still written and the external copy is skipped with a warning. If
-the external copy fails, the backup continues — the local archive is the
-source of truth. Existing dated `Exports_*` directories are never cleaned up
-automatically.
+export files are still written and the external copy is skipped with a
+warning. If the external copy fails, the backup continues — the local export
+files are the source of truth. Existing dated `Exports_*` directories are
+never cleaned up automatically.
 
 ---
 
@@ -423,15 +425,16 @@ about a week.
 
 ### Export archives
 
-These variables control where zip-producing backups store their archives
-(see [Export Archives & External Drive Copy](#export-archives--external-drive-copy)):
+These variables control where export-producing backups store their output
+files — zips and bookmarks HTML/JSON alike (see
+[Export Archives & External Drive Copy](#export-archives--external-drive-copy)):
 
 ```bash
 # Optional: local export root for dated Exports_* directories
 # (absolute or ~-relative; default: ~/Exports)
 EXPORTS_DIR=""
 
-# Optional: volume label of an external drive to copy archives to.
+# Optional: volume label of an external drive to copy export files to.
 # When unset, the external copy is skipped.
 EXTERNAL_DRIVE_LABEL=""
 
@@ -638,8 +641,8 @@ npm run backup:brave-bookmarks
 
 ### Brave Bookmarks Export Output
 
-- **HTML export**: `~/brave-bookmarks_YYYY-MM-DD.html`
-- **JSON copy**: `~/brave-bookmarks_YYYY-MM-DD.json`
+- **HTML export**: `~/Exports/Exports_YYYY-MM-DD/brave-bookmarks_YYYY-MM-DD.html`
+- **JSON copy**: `~/Exports/Exports_YYYY-MM-DD/brave-bookmarks_YYYY-MM-DD.json`
 - **Logs**: `logs/brave-bookmarks-backup-YYYYMMDD-HHMMSS.log`
 
 ---
@@ -672,8 +675,8 @@ npm run backup:chrome-bookmarks
 
 ### Chrome Bookmarks Export Output
 
-- **HTML export**: `~/chrome-bookmarks_YYYY-MM-DD.html`
-- **JSON copy**: `~/chrome-bookmarks_YYYY-MM-DD.json`
+- **HTML export**: `~/Exports/Exports_YYYY-MM-DD/chrome-bookmarks_YYYY-MM-DD.html`
+- **JSON copy**: `~/Exports/Exports_YYYY-MM-DD/chrome-bookmarks_YYYY-MM-DD.json`
 - **Logs**: `logs/chrome-bookmarks-backup-YYYYMMDD-HHMMSS.log`
 
 ---
