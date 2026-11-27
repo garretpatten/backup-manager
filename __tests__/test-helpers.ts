@@ -133,6 +133,14 @@ export class MockFileSystem implements FileSystem {
       isFile: () => this.files.has(path),
     };
   }
+
+  async hashFile(path: string): Promise<string> {
+    const content = this.files.get(path);
+    if (content === undefined) {
+      throw new Error(`File not found: ${path}`);
+    }
+    return createHash('sha256').update(content).digest('hex');
+  }
 }
 
 export class MockHttpClient implements HttpClient {
@@ -288,6 +296,9 @@ export class MockSyncClient implements SyncClient {
 export class MockArchive implements Archive {
   calls: Array<{ sourceDirName: string; outputFileName: string; cwd: string; exclude?: string[] }> =
     [];
+  verifyCalls: string[] = [];
+  /** Paths whose verify() throws, simulating a corrupted archive. */
+  verifyFailures = new Set<string>();
 
   constructor(private readonly fs?: FileSystem) {}
 
@@ -300,6 +311,13 @@ export class MockArchive implements Archive {
     this.calls.push({ sourceDirName, outputFileName, cwd, exclude });
     if (this.fs) {
       await this.fs.writeFile(path.join(cwd, outputFileName), 'zip-content');
+    }
+  }
+
+  async verify(zipPath: string): Promise<void> {
+    this.verifyCalls.push(zipPath);
+    if (this.verifyFailures.has(zipPath)) {
+      throw new Error(`simulated corrupted archive: ${zipPath}`);
     }
   }
 }

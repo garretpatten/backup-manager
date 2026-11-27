@@ -58,6 +58,10 @@ class RecordingFileSystem implements FileSystem {
   async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
     return this.inner.stat(path);
   }
+
+  async hashFile(path: string): Promise<string> {
+    return this.inner.hashFile(path);
+  }
 }
 
 function setupSourceFs(fs: MockFileSystem, homeDir: string): string {

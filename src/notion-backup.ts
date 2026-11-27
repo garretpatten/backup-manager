@@ -1,6 +1,6 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import { NotionApiClient } from './notion.js';
 import { NotionExporter } from './notion-exporter.js';
@@ -106,6 +106,7 @@ export class NotionBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     await this.context.fs.rm(exportDir, { recursive: true, force: true });
 
@@ -127,7 +128,9 @@ export class NotionBackup {
       '*.DS_Store',
       '*.log',
     ]);
-    logger.success(`Export created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Export created successfully: ${zipPath}`);
   }
 }
 

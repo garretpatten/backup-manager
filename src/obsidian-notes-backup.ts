@@ -1,6 +1,6 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import { BackupContext, Logger } from './types.js';
 import path from 'node:path';
@@ -65,6 +65,7 @@ export class ObsidianNotesBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     logger.success('Obsidian Notes backup completed!');
     logger.info(`Notes backed up: ${fileCount}`);
@@ -110,7 +111,9 @@ export class ObsidianNotesBackup {
     logger.info('Creating Obsidian Notes backup zip...');
     const outputFileName = `${backupDirName}.zip`;
     await this.context.archive.zipDirectory(backupDirName, outputFileName, cwd);
-    logger.success(`Backup created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Backup created successfully: ${zipPath}`);
   }
 }
 

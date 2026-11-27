@@ -1,7 +1,7 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
 import { numEnv, saveEnvValue } from './env.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import {
   LoopbackRedirectListener,
@@ -119,6 +119,7 @@ export class SpotifyBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     logger.success('Spotify export completed!');
     logger.info('Profile backed up');
@@ -258,7 +259,9 @@ export class SpotifyBackup {
     logger.info('Creating Spotify export zip...');
     const outputFileName = `${exportDirName}.zip`;
     await this.context.archive.zipDirectory(exportDirName, outputFileName, cwd);
-    logger.success(`Export created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Export created successfully: ${zipPath}`);
   }
 }
 

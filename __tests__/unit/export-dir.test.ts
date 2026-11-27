@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   copyExportFilesToExternalDrive,
   copyFileToExternalDrive,
@@ -10,6 +11,7 @@ import {
   resolveExternalDriveMount,
   resolveLocalExportDir,
   storeArchive,
+  writeArchiveManifest,
 } from '../../src/export-dir.js';
 import { MockFileSystem, MockLogger } from '../test-helpers.js';
 
@@ -443,6 +445,89 @@ describe('export-dir helpers', () => {
       expect(fs.files.get(localArchivePath)).toBe('zip-content');
       expect(
         logger.messages.some((m) => m.level === 'WARN' && m.message.includes('Backup Drive')),
+      ).toBe(true);
+    });
+  });
+
+  describe('writeArchiveManifest', () => {
+    let fs: MockFileSystem;
+    let logger: MockLogger;
+
+    const manifestPath = '/home/user/Exports/Exports_2024-06-15/manifest.sha256';
+    const sha = (input: string): string => createHash('sha256').update(input).digest('hex');
+
+    beforeEach(() => {
+      fs = new MockFileSystem();
+      logger = new MockLogger();
+    });
+
+    it('lists every archive in the dated export dir with its SHA-256, sorted', async () => {
+      fs.files.set(
+        '/home/user/Exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip',
+        'notion-zip',
+      );
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/Code-Export_2024-06-15.zip', 'code-zip');
+
+      await writeArchiveManifest(fs, {}, logger, '/home/user', date);
+
+      expect(fs.files.get(manifestPath)).toBe(
+        `${sha('code-zip')}  Code-Export_2024-06-15.zip\n` +
+          `${sha('notion-zip')}  Notion-Export_2024-06-15.zip\n`,
+      );
+      expect(
+        logger.messages.some(
+          (m) => m.level === 'SUCCESS' && m.message.includes('Archive manifest written'),
+        ),
+      ).toBe(true);
+    });
+
+    it('ignores non-archive files and recognizes an uppercase .zip suffix', async () => {
+      fs.files.set('/home/user/Exports/Exports_2024-06-15/Notes_2024-06-15.ZIP', 'notes-zip');
+      fs.files.set(
+        '/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+        '<html>bookmarks</html>',
+      );
+      fs.files.set(
+        '/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.json',
+        '{"roots":{}}',
+      );
+
+      await writeArchiveManifest(fs, {}, logger, '/home/user', date);
+
+      expect(fs.files.get(manifestPath)).toBe(`${sha('notes-zip')}  Notes_2024-06-15.ZIP\n`);
+    });
+
+    it('honors an EXPORTS_DIR override for the local export root', async () => {
+      fs.files.set('/data/exports/Exports_2024-06-15/Notion-Export_2024-06-15.zip', 'notion-zip');
+
+      await writeArchiveManifest(fs, { EXPORTS_DIR: '/data/exports' }, logger, '/home/user', date);
+
+      expect(fs.files.get('/data/exports/Exports_2024-06-15/manifest.sha256')).toBe(
+        `${sha('notion-zip')}  Notion-Export_2024-06-15.zip\n`,
+      );
+    });
+
+    it('skips with a warning when the export dir holds no archives', async () => {
+      fs.directories.add('/home/user/Exports/Exports_2024-06-15');
+      fs.files.set(
+        '/home/user/Exports/Exports_2024-06-15/brave-bookmarks_2024-06-15.html',
+        '<html>bookmarks</html>',
+      );
+
+      await writeArchiveManifest(fs, {}, logger, '/home/user', date);
+
+      expect(fs.files.has(manifestPath)).toBe(false);
+      expect(
+        logger.messages.some((m) => m.level === 'WARN' && m.message.includes('No archives found')),
+      ).toBe(true);
+    });
+
+    it('skips with a warning when the export dir does not exist', async () => {
+      await writeArchiveManifest(fs, {}, logger, '/home/user', date);
+
+      expect(fs.files.has(manifestPath)).toBe(false);
+      expect(
+        logger.messages.some((m) => m.level === 'WARN' && m.message.includes('No archives found')),
       ).toBe(true);
     });
   });
