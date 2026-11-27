@@ -1,6 +1,6 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import { GitHubApiClient, githubTokenAuth } from './github.js';
 import { BackupContext, Logger } from './types.js';
@@ -77,6 +77,7 @@ export class LocalBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     logger.success('Backup process completed!');
     logger.info(`Total repositories: ${repos.length}`);
@@ -180,7 +181,9 @@ export class LocalBackup {
       '*.DS_Store',
       '*.log',
     ]);
-    logger.success(`Backup created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Backup created successfully: ${zipPath}`);
   }
 
   get runner() {

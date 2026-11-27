@@ -235,6 +235,17 @@ warning. If the external copy fails, the backup continues — the local export
 files are the source of truth. Existing dated `Exports_*` directories are
 never cleaned up automatically.
 
+Every produced zip is verified with `zip -T` before the backup step reports
+success, so a corrupted archive fails the step loudly instead of surfacing at
+restore time. After each archive lands, the dated export directory's
+`manifest.sha256` is rewritten to list every archive with its SHA-256 digest
+in `sha256sum -c` compatible form, so a later restore can re-verify content
+independently of this tool:
+
+```bash
+cd ~/Exports/Exports_YYYY-MM-DD && sha256sum -c manifest.sha256
+```
+
 ---
 
 ## Environment Variables

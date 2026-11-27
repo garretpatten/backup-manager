@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync } from 'node:fs';
 import {
   mkdir,
   rm,
@@ -9,7 +11,6 @@ import {
   copyFile,
   rename,
 } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { FileSystem } from './types.js';
 
 export class RealFileSystem implements FileSystem {
@@ -51,5 +52,17 @@ export class RealFileSystem implements FileSystem {
 
   async stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }> {
     return stat(path);
+  }
+
+  async hashFile(path: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      // Streamed rather than buffered: backup archives reach hundreds of
+      // megabytes, and a restore-side digest must match the bytes on disk.
+      const hash = createHash('sha256');
+      const stream = createReadStream(path);
+      stream.on('data', (chunk) => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
   }
 }

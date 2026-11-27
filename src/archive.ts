@@ -31,4 +31,12 @@ export class ZipArchive implements Archive {
       throw new Error(`zip failed: ${result.stderr}`);
     }
   }
+
+  async verify(zipPath: string): Promise<void> {
+    const result = await this.runner.run('zip', ['-T', zipPath]);
+
+    if (result.exitCode !== 0) {
+      throw new Error(`zip -T failed for ${zipPath}: ${result.stderr}`);
+    }
+  }
 }

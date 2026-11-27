@@ -36,6 +36,8 @@ export interface FileSystem {
   exists(path: string): Promise<boolean>;
   readdir(path: string): Promise<string[]>;
   stat(path: string): Promise<{ isDirectory(): boolean; isFile(): boolean }>;
+  /** SHA-256 digest of a file's bytes, lowercase hex. */
+  hashFile(path: string): Promise<string>;
 }
 
 export interface Logger {
@@ -53,6 +55,12 @@ export interface Archive {
     cwd: string,
     exclude?: string[],
   ): Promise<void>;
+  /**
+   * Verifies the structural integrity of an existing zip archive
+   * (`zip -T`). Rejects when the archive is corrupted so the step fails
+   * loudly instead of reporting success on an unrestorable backup.
+   */
+  verify(zipPath: string): Promise<void>;
 }
 
 export interface DateProvider {

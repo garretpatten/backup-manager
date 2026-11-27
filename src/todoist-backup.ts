@@ -1,6 +1,6 @@
 import { createBackupContext, resolveModuleRoot } from './backup-context.js';
 import { checkDependencies } from './dependencies.js';
-import { storeArchive } from './export-dir.js';
+import { storeArchive, writeArchiveManifest } from './export-dir.js';
 import { FileLogger } from './logger.js';
 import { TodoistApiClient } from './todoist.js';
 import { BackupContext, Logger } from './types.js';
@@ -74,6 +74,7 @@ export class TodoistBackup {
       config.homeDir,
       date,
     );
+    await writeArchiveManifest(this.context.fs, this.context.env, logger, config.homeDir, date);
 
     logger.success('Todoist backup completed!');
     logger.info(`Tasks backed up: ${tasks.length}`);
@@ -99,7 +100,9 @@ export class TodoistBackup {
     logger.info('Creating Todoist backup zip...');
     const outputFileName = `${exportDirName}.zip`;
     await this.context.archive.zipDirectory(exportDirName, outputFileName, cwd);
-    logger.success(`Backup created successfully: ${path.join(cwd, outputFileName)}`);
+    const zipPath = path.join(cwd, outputFileName);
+    await this.context.archive.verify(zipPath);
+    logger.success(`Backup created successfully: ${zipPath}`);
   }
 }
 
