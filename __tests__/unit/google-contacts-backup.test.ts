@@ -114,9 +114,9 @@ describe('GoogleContactsBackup', () => {
     expect(
       fs.files.get('/home/user/Exports/Exports_2024-06-15/Google-Contacts-Export_2024-06-15.zip'),
     ).toBe('zip-content');
-    expect(logger.messages.some((m) => m.level === 'WARN' && m.message.includes('T7 Shield'))).toBe(
-      true,
-    );
+    expect(
+      logger.messages.some((m) => m.level === 'INFO' && m.message.includes('EXTERNAL_DRIVE_LABEL')),
+    ).toBe(true);
     expect(logger.messages.some((m) => m.message.includes('Contacts backed up: 2'))).toBe(true);
     expect(logger.messages.some((m) => m.message.includes('Contact groups backed up: 1'))).toBe(
       true,
